@@ -29,6 +29,10 @@ const hospitalSchema = new mongoose.Schema({
   },
   facilities: [String],
   services: [String],
+  departments: [String], // Hospital departments
+  logo: {
+    type: String // Logo URL
+  },
   status: {
     type: String,
     enum: [

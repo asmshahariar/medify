@@ -4,7 +4,14 @@ import {
   registerHospital,
   addDoctorByHospital,
   getHospitalDoctors,
-  approveDoctorByHospital
+  approveDoctorByHospital,
+  getHospitalProfile,
+  updateHospitalProfile,
+  searchVerifiedDoctors,
+  linkDoctorToHospital,
+  removeDoctorFromHospital,
+  getHospitalAppointments,
+  getHospitalDashboard
 } from '../controllers/hospital.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 import { checkHospitalOwnership } from '../middlewares/hospitalOwnership.middleware.js';
@@ -39,7 +46,7 @@ router.post('/:hospitalId/doctors', checkHospitalOwnership, [
     .matches(/^\+?[1-9]\d{1,14}$/).withMessage('Valid phone number is required'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
   body('medicalLicenseNumber').notEmpty().withMessage('Medical license number is required'),
-  body('licenseDocumentUrl').notEmpty().withMessage('License document URL is required'),
+  body('licenseDocumentUrl').optional().isString().withMessage('License document URL must be a string'),
   body('specialization').notEmpty().withMessage('Specialization is required'),
   body('experienceYears').isInt({ min: 0 }).withMessage('Experience years must be a valid number')
 ], addDoctorByHospital);
@@ -49,5 +56,32 @@ router.get('/:hospitalId/doctors', checkHospitalOwnership, getHospitalDoctors);
 
 // Approve doctor registered under hospital
 router.post('/:hospitalId/approve/doctor/:doctorId', checkHospitalOwnership, approveDoctorByHospital);
+
+// Hospital Profile Management
+router.get('/:hospitalId/profile', checkHospitalOwnership, getHospitalProfile);
+router.put('/:hospitalId/profile', checkHospitalOwnership, [
+  body('name').optional().trim().notEmpty(),
+  body('address').optional().trim().notEmpty(),
+  body('contactInfo').optional().isObject(),
+  body('departments').optional().isArray(),
+  body('logo').optional().isString(),
+  body('facilities').optional().isArray(),
+  body('services').optional().isArray()
+], updateHospitalProfile);
+
+// Search and Link Verified Doctors
+router.get('/:hospitalId/doctors/search', checkHospitalOwnership, searchVerifiedDoctors);
+router.post('/:hospitalId/doctors/link', checkHospitalOwnership, [
+  body('doctorId').isMongoId().withMessage('Valid doctor ID is required'),
+  body('designation').optional().trim(),
+  body('department').optional().trim()
+], linkDoctorToHospital);
+router.delete('/:hospitalId/doctors/:doctorId', checkHospitalOwnership, removeDoctorFromHospital);
+
+// Hospital Appointments (Read-only)
+router.get('/:hospitalId/appointments', checkHospitalOwnership, getHospitalAppointments);
+
+// Hospital Dashboard
+router.get('/:hospitalId/dashboard', checkHospitalOwnership, getHospitalDashboard);
 
 export default router;

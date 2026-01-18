@@ -187,7 +187,7 @@ curl -X GET http://localhost:5000/api/auth/me \
   "password": "password123",
   "role": "patient"
 }
-```
+
 
 6. Click "Send"
 7. **Expected:** 201 Created with token
