@@ -5,6 +5,7 @@ import Approval from '../models/Approval.model.js';
 import Appointment from '../models/Appointment.model.js';
 import Chamber from '../models/Chamber.model.js';
 import HospitalSchedule from '../models/HospitalSchedule.model.js';
+import HomeService from '../models/HomeService.model.js';
 import { validationResult } from 'express-validator';
 import moment from 'moment';
 
@@ -912,6 +913,357 @@ export const getHospitalDashboard = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch hospital dashboard',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * POST /api/hospitals/:hospitalId/home-services
+ * Create a new home service for the hospital
+ */
+export const createHomeService = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { hospitalId } = req.params;
+    const { serviceType, price, note, availableTime, offDays } = req.body;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    // Validate availableTime format
+    if (availableTime) {
+      const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+      if (availableTime.startTime && !timeRegex.test(availableTime.startTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Start time must be in HH:mm format (e.g., 09:00)'
+        });
+      }
+      if (availableTime.endTime && !timeRegex.test(availableTime.endTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'End time must be in HH:mm format (e.g., 17:00)'
+        });
+      }
+
+      // Validate that endTime is after startTime
+      if (availableTime.startTime && availableTime.endTime) {
+        const [startHour, startMin] = availableTime.startTime.split(':').map(Number);
+        const [endHour, endMin] = availableTime.endTime.split(':').map(Number);
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = endHour * 60 + endMin;
+        
+        if (endMinutes <= startMinutes) {
+          return res.status(400).json({
+            success: false,
+            message: 'End time must be after start time'
+          });
+        }
+      }
+    }
+
+    // Validate offDays
+    if (offDays && Array.isArray(offDays)) {
+      const invalidDays = offDays.filter(day => day < 0 || day > 6 || !Number.isInteger(day));
+      if (invalidDays.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Off days must be integers between 0 (Sunday) and 6 (Saturday)'
+        });
+      }
+    }
+
+    // Create home service
+    const homeService = await HomeService.create({
+      hospitalId,
+      serviceType: serviceType.trim(),
+      price,
+      note: note ? note.trim() : '',
+      availableTime: availableTime || { startTime: '09:00', endTime: '17:00' },
+      offDays: offDays || [],
+      isActive: true
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Home service created successfully',
+      data: { homeService }
+    });
+  } catch (error) {
+    console.error('Create home service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create home service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/home-services
+ * Get all home services for a hospital
+ */
+export const getHomeServices = async (req, res) => {
+  try {
+    const { hospitalId } = req.params;
+    const { isActive } = req.query;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    // Build query
+    const query = { hospitalId };
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    }
+
+    const homeServices = await HomeService.find(query)
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: {
+        homeServices,
+        count: homeServices.length
+      }
+    });
+  } catch (error) {
+    console.error('Get home services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home services',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/home-services/:serviceId
+ * Get a specific home service
+ */
+export const getHomeService = async (req, res) => {
+  try {
+    const { hospitalId, serviceId } = req.params;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    const homeService = await HomeService.findOne({
+      _id: serviceId,
+      hospitalId
+    });
+
+    if (!homeService) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { homeService }
+    });
+  } catch (error) {
+    console.error('Get home service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * PUT /api/hospitals/:hospitalId/home-services/:serviceId
+ * Update a home service
+ */
+export const updateHomeService = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { hospitalId, serviceId } = req.params;
+    const { serviceType, price, note, availableTime, offDays, isActive } = req.body;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    const homeService = await HomeService.findOne({
+      _id: serviceId,
+      hospitalId
+    });
+
+    if (!homeService) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not found'
+      });
+    }
+
+    // Validate availableTime if provided
+    if (availableTime) {
+      const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+      if (availableTime.startTime && !timeRegex.test(availableTime.startTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Start time must be in HH:mm format (e.g., 09:00)'
+        });
+      }
+      if (availableTime.endTime && !timeRegex.test(availableTime.endTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'End time must be in HH:mm format (e.g., 17:00)'
+        });
+      }
+
+      // Validate that endTime is after startTime
+      const startTime = availableTime.startTime || homeService.availableTime.startTime;
+      const endTime = availableTime.endTime || homeService.availableTime.endTime;
+      
+      if (startTime && endTime) {
+        const [startHour, startMin] = startTime.split(':').map(Number);
+        const [endHour, endMin] = endTime.split(':').map(Number);
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = endHour * 60 + endMin;
+        
+        if (endMinutes <= startMinutes) {
+          return res.status(400).json({
+            success: false,
+            message: 'End time must be after start time'
+          });
+        }
+      }
+    }
+
+    // Validate offDays if provided
+    if (offDays !== undefined && Array.isArray(offDays)) {
+      const invalidDays = offDays.filter(day => day < 0 || day > 6 || !Number.isInteger(day));
+      if (invalidDays.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Off days must be integers between 0 (Sunday) and 6 (Saturday)'
+        });
+      }
+    }
+
+    // Update fields
+    if (serviceType !== undefined) {
+      homeService.serviceType = serviceType.trim();
+    }
+    if (price !== undefined) {
+      homeService.price = price;
+    }
+    if (note !== undefined) {
+      homeService.note = note.trim();
+    }
+    if (availableTime !== undefined) {
+      homeService.availableTime = {
+        startTime: availableTime.startTime || homeService.availableTime.startTime,
+        endTime: availableTime.endTime || homeService.availableTime.endTime
+      };
+    }
+    if (offDays !== undefined) {
+      homeService.offDays = offDays;
+    }
+    if (isActive !== undefined) {
+      homeService.isActive = isActive;
+    }
+
+    await homeService.save();
+
+    res.json({
+      success: true,
+      message: 'Home service updated successfully',
+      data: { homeService }
+    });
+  } catch (error) {
+    console.error('Update home service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update home service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * DELETE /api/hospitals/:hospitalId/home-services/:serviceId
+ * Delete a home service
+ */
+export const deleteHomeService = async (req, res) => {
+  try {
+    const { hospitalId, serviceId } = req.params;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    const homeService = await HomeService.findOneAndDelete({
+      _id: serviceId,
+      hospitalId
+    });
+
+    if (!homeService) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Home service deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete home service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete home service',
       error: error.message
     });
   }

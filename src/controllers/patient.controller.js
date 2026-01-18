@@ -7,6 +7,7 @@ import Prescription from '../models/Prescription.model.js';
 import Test from '../models/Test.model.js';
 import Order from '../models/Order.model.js';
 import Specialization from '../models/Specialization.model.js';
+import Schedule from '../models/Schedule.model.js';
 import { generateAvailableSlots, lockSlot } from '../utils/slotGenerator.util.js';
 import { createAndSendNotification } from '../services/notification.service.js';
 import { generatePrescriptionPDF } from '../utils/pdfGenerator.util.js';
@@ -70,108 +71,269 @@ export const updateProfile = async (req, res) => {
   }
 };
 
-// Search doctors
+// Search doctors with multiple search options
 export const searchDoctors = async (req, res) => {
   try {
     const { 
-      specializationId, 
-      city, 
-      hospitalId, 
+      hospitalName,
       doctorName,
-      latitude,
-      longitude,
+      department,
+      specialization,
       page = 1,
-      limit = 10
+      limit = 20
     } = req.query;
 
-    const query = {};
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    let doctorIds = new Set();
+    let hospitalIds = [];
 
-    // Build query
-    if (specializationId) {
-      query.specialization = specializationId;
-    }
+    // Step 1: Find hospitals if hospitalName is provided
+    if (hospitalName) {
+      const hospitals = await Hospital.find({
+        name: { $regex: hospitalName, $options: 'i' },
+        status: 'approved'
+      }).select('_id name departments associatedDoctors');
+      
+      hospitalIds = hospitals.map(h => h._id);
 
-    if (hospitalId) {
-      // Find chambers for this hospital
-      const chambers = await Chamber.find({ hospitalId });
-      const doctorIds = chambers.map(c => c.doctorId);
-      if (doctorIds.length > 0) {
-        query._id = { $in: doctorIds };
-      } else {
+      if (hospitalIds.length === 0) {
+        // No hospitals found, return empty results
         return res.json({
           success: true,
-          data: { doctors: [], total: 0, page, limit }
+          data: {
+            doctors: [],
+            total: 0,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pagination: {
+              page: parseInt(page),
+              limit: parseInt(limit),
+              total: 0,
+              pages: 0
+            }
+          }
         });
       }
+
+      // Get doctors from hospital associations and chambers
+      // From associatedDoctors
+      hospitals.forEach(hospital => {
+        if (hospital.associatedDoctors && hospital.associatedDoctors.length > 0) {
+          hospital.associatedDoctors.forEach(assoc => {
+            if (assoc.doctor) {
+              doctorIds.add(assoc.doctor.toString());
+            }
+          });
+        }
+      });
+
+      // From chambers
+      const chambers = await Chamber.find({ 
+        hospitalId: { $in: hospitalIds },
+        isActive: true
+      }).select('doctorId');
+      
+      chambers.forEach(c => {
+        if (c.doctorId) {
+          doctorIds.add(c.doctorId.toString());
+        }
+      });
     }
 
-    if (city) {
-      // Find hospitals in city
-      const hospitals = await Hospital.find({ 
-        'address.city': new RegExp(city, 'i'),
-        status: 'active'
-      });
-      const hospitalIds = hospitals.map(h => h._id);
+    // Step 2: Filter by department if provided
+    if (department) {
+      const deptDoctorIds = new Set();
       
-      const chambers = await Chamber.find({ hospitalId: { $in: hospitalIds } });
-      const doctorIds = chambers.map(c => c.doctorId);
-      
-      if (query._id) {
-        query._id = { $in: [...(Array.isArray(query._id.$in) ? query._id.$in : [query._id.$in]), ...doctorIds] };
-      } else if (doctorIds.length > 0) {
-        query._id = { $in: doctorIds };
+      if (hospitalIds.length > 0) {
+        // Search within specific hospitals
+        const hospitalsWithDept = await Hospital.find({
+          _id: { $in: hospitalIds },
+          status: 'approved'
+        }).populate('associatedDoctors.doctor');
+
+        hospitalsWithDept.forEach(hospital => {
+          // Check if hospital has this department
+          const hasDept = hospital.departments && hospital.departments.some(dept => 
+            dept.toLowerCase().includes(department.toLowerCase())
+          );
+
+          if (hasDept) {
+            // Add all doctors from this hospital
+            if (hospital.associatedDoctors) {
+              hospital.associatedDoctors.forEach(assoc => {
+                if (assoc.doctor && assoc.doctor._id) {
+                  deptDoctorIds.add(assoc.doctor._id.toString());
+                }
+              });
+            }
+          } else {
+            // Check individual doctor departments
+            if (hospital.associatedDoctors) {
+              hospital.associatedDoctors.forEach(assoc => {
+                if (assoc.department && 
+                    assoc.department.toLowerCase().includes(department.toLowerCase()) &&
+                    assoc.doctor && assoc.doctor._id) {
+                  deptDoctorIds.add(assoc.doctor._id.toString());
+                }
+              });
+            }
+          }
+        });
+
+        // Also check chambers
+        const chambersWithDept = await Chamber.find({
+          hospitalId: { $in: hospitalIds },
+          isActive: true
+        }).populate('doctorId');
+        
+        chambersWithDept.forEach(c => {
+          if (c.doctorId && c.doctorId._id) {
+            deptDoctorIds.add(c.doctorId._id.toString());
+          }
+        });
+      } else {
+        // Search all hospitals by department
+        const hospitalsWithDept = await Hospital.find({
+          status: 'approved',
+          $or: [
+            { departments: { $regex: department, $options: 'i' } },
+            { 'associatedDoctors.department': { $regex: department, $options: 'i' } }
+          ]
+        }).populate('associatedDoctors.doctor');
+
+        hospitalsWithDept.forEach(hospital => {
+          const hasDept = hospital.departments && hospital.departments.some(dept => 
+            dept.toLowerCase().includes(department.toLowerCase())
+          );
+
+          if (hasDept) {
+            if (hospital.associatedDoctors) {
+              hospital.associatedDoctors.forEach(assoc => {
+                if (assoc.doctor && assoc.doctor._id) {
+                  deptDoctorIds.add(assoc.doctor._id.toString());
+                }
+              });
+            }
+          } else {
+            if (hospital.associatedDoctors) {
+              hospital.associatedDoctors.forEach(assoc => {
+                if (assoc.department && 
+                    assoc.department.toLowerCase().includes(department.toLowerCase()) &&
+                    assoc.doctor && assoc.doctor._id) {
+                  deptDoctorIds.add(assoc.doctor._id.toString());
+                }
+              });
+            }
+          }
+        });
+      }
+
+      // Intersect with existing doctorIds if hospital was specified
+      if (doctorIds.size > 0) {
+        const intersection = new Set([...doctorIds].filter(id => deptDoctorIds.has(id)));
+        doctorIds = intersection;
+      } else {
+        doctorIds = deptDoctorIds;
       }
     }
 
+    // Step 3: Build doctor query
+    const doctorQuery = {
+      status: 'approved' // Only show approved doctors
+    };
+
+    // Filter by doctor IDs if we have any
+    if (doctorIds.size > 0) {
+      doctorQuery._id = { $in: Array.from(doctorIds) };
+    }
+
+    // Filter by doctor name
     if (doctorName) {
-      const users = await User.find({ 
-        name: new RegExp(doctorName, 'i'),
-        role: 'doctor'
-      });
-      const userIds = users.map(u => u._id);
-      const doctors = await Doctor.find({ userId: { $in: userIds } });
-      const doctorIds = doctors.map(d => d._id);
-      
-      if (query._id) {
-        query._id = { $in: [...(Array.isArray(query._id.$in) ? query._id.$in : [query._id.$in]), ...doctorIds] };
-      } else if (doctorIds.length > 0) {
-        query._id = { $in: doctorIds };
-      }
+      doctorQuery.name = { $regex: doctorName, $options: 'i' };
     }
 
-    // Status filter
-    query.status = 'active';
+    // Filter by specialization
+    if (specialization) {
+      doctorQuery.specialization = { $in: [specialization] };
+    }
 
-    const doctors = await Doctor.find(query)
-      .populate('userId', 'name email phone profileImage')
-      .populate('specialization')
+    // Step 4: Find doctors matching the query
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const doctors = await Doctor.find(doctorQuery)
+      .select('-password') // Exclude password
+      .sort({ name: 1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    const total = await Doctor.countDocuments(query);
+    const total = await Doctor.countDocuments(doctorQuery);
 
-    // Get chambers for each doctor
-    const doctorsWithChambers = await Promise.all(doctors.map(async (doctor) => {
-      const chambers = await Chamber.find({ doctorId: doctor._id })
-        .populate('hospitalId', 'facilityName address');
-      
+    // Step 5: Enrich doctor data with hospital and chamber information
+    const enrichedDoctors = await Promise.all(doctors.map(async (doctor) => {
+      // Get hospital associations
+      const hospitals = await Hospital.find({
+        status: 'approved',
+        $or: [
+          { 'associatedDoctors.doctor': doctor._id },
+          { _id: doctor.hospitalId }
+        ]
+      }).select('name address departments associatedDoctors logo');
+
+      // Get chambers for this doctor
+      const chambers = await Chamber.find({ 
+        doctorId: doctor._id,
+        isActive: true
+      }).populate('hospitalId', 'name address logo');
+
+      // Get department info from hospital associations
+      const hospitalInfo = hospitals.map(hospital => {
+        const assoc = hospital.associatedDoctors.find(
+          ad => ad.doctor && ad.doctor.toString() === doctor._id.toString()
+        );
+        return {
+          hospitalId: hospital._id,
+          hospitalName: hospital.name,
+          address: hospital.address,
+          logo: hospital.logo,
+          department: assoc ? assoc.department : null,
+          designation: assoc ? assoc.designation : null
+        };
+      });
+
       return {
         ...doctor.toObject(),
-        chambers
+        hospitals: hospitalInfo,
+        chambers: chambers.map(c => ({
+          chamberId: c._id,
+          name: c.name,
+          address: c.address,
+          consultationFee: c.consultationFee,
+          followUpFee: c.followUpFee,
+          hospital: c.hospitalId ? {
+            hospitalId: c.hospitalId._id,
+            name: c.hospitalId.name,
+            address: c.hospitalId.address,
+            logo: c.hospitalId.logo
+          } : null
+        }))
       };
     }));
 
     res.json({
       success: true,
       data: {
-        doctors: doctorsWithChambers,
+        doctors: enrichedDoctors,
         total,
         page: parseInt(page),
-        limit: parseInt(limit)
+        limit: parseInt(limit),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
       }
     });
   } catch (error) {
+    console.error('Search doctors error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to search doctors',
@@ -180,14 +342,13 @@ export const searchDoctors = async (req, res) => {
   }
 };
 
-// Get doctor details
+// Get doctor details with complete information
 export const getDoctorDetails = async (req, res) => {
   try {
     const { doctorId } = req.params;
 
     const doctor = await Doctor.findById(doctorId)
-      .populate('userId', 'name email phone profileImage')
-      .populate('specialization');
+      .select('-password'); // Exclude password
 
     if (!doctor) {
       return res.status(404).json({
@@ -196,19 +357,118 @@ export const getDoctorDetails = async (req, res) => {
       });
     }
 
-    const chambers = await Chamber.find({ doctorId })
-      .populate('hospitalId', 'facilityName address contactInfo');
+    // Only show approved doctors to public
+    if (doctor.status !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: 'Doctor profile is not available'
+      });
+    }
+
+    // Get hospital associations with department info
+    const hospitals = await Hospital.find({
+      status: 'approved',
+      $or: [
+        { 'associatedDoctors.doctor': doctor._id },
+        { _id: doctor.hospitalId }
+      ]
+    }).select('name address departments associatedDoctors logo contactInfo');
+
+    // Get chambers for this doctor with hospital info
+    const chambers = await Chamber.find({ 
+      doctorId: doctor._id,
+      isActive: true
+    }).populate('hospitalId', 'name address logo contactInfo');
+
+    // Get schedules for each chamber
+    const schedules = await Schedule.find({
+      doctorId: doctor._id,
+      isActive: true
+    }).populate('chamberId', 'name hospitalId');
+
+    // Build hospital info with department
+    const hospitalInfo = hospitals.map(hospital => {
+      const assoc = hospital.associatedDoctors.find(
+        ad => ad.doctor && ad.doctor.toString() === doctor._id.toString()
+      );
+      return {
+        hospitalId: hospital._id,
+        hospitalName: hospital.name,
+        address: hospital.address,
+        logo: hospital.logo,
+        contactInfo: hospital.contactInfo,
+        departments: hospital.departments,
+        department: assoc ? assoc.department : null,
+        designation: assoc ? assoc.designation : null,
+        joinedAt: assoc ? assoc.joinedAt : null
+      };
+    });
+
+    // Build chamber info with fees and schedule
+    const chamberInfo = chambers.map(chamber => {
+      const chamberSchedules = schedules.filter(
+        s => s.chamberId && s.chamberId._id.toString() === chamber._id.toString()
+      );
+      
+      return {
+        chamberId: chamber._id,
+        name: chamber.name,
+        address: chamber.address,
+        consultationFee: chamber.consultationFee,
+        followUpFee: chamber.followUpFee,
+        contactInfo: chamber.contactInfo,
+        hospital: chamber.hospitalId ? {
+          hospitalId: chamber.hospitalId._id,
+          name: chamber.hospitalId.name,
+          address: chamber.hospitalId.address,
+          logo: chamber.hospitalId.logo,
+          contactInfo: chamber.hospitalId.contactInfo
+        } : null,
+        schedules: chamberSchedules.map(s => ({
+          scheduleId: s._id,
+          dayOfWeek: s.dayOfWeek,
+          timeSlots: s.timeSlots,
+          isActive: s.isActive
+        }))
+      };
+    });
+
+    // Build complete doctor response
+    const doctorDetails = {
+      doctorId: doctor._id,
+      name: doctor.name,
+      email: doctor.email,
+      phone: doctor.phone,
+      bio: doctor.bio,
+      description: doctor.description,
+      profilePhotoUrl: doctor.profilePhotoUrl,
+      specialization: doctor.specialization,
+      qualifications: doctor.qualifications,
+      experienceYears: doctor.experienceYears,
+      medicalLicenseNumber: doctor.medicalLicenseNumber,
+      consultationFee: doctor.consultationFee,
+      followUpFee: doctor.followUpFee,
+      reportFee: doctor.reportFee,
+      visitingDays: doctor.visitingDays,
+      chamber: doctor.chamber,
+      emergencyAvailability: doctor.emergencyAvailability,
+      socialLinks: doctor.socialLinks,
+      rating: doctor.rating,
+      holidays: doctor.holidays,
+      hospitals: hospitalInfo,
+      chambers: chamberInfo,
+      createdAt: doctor.createdAt,
+      updatedAt: doctor.updatedAt
+    };
 
     res.json({
       success: true,
       data: {
-        doctor: {
-          ...doctor.toObject(),
-          chambers
-        }
+        doctor: doctorDetails
       }
     });
   } catch (error) {
+    console.error('Get doctor details error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch doctor details',
@@ -720,4 +980,5 @@ export const getSpecializations = async (req, res) => {
     });
   }
 };
+
 

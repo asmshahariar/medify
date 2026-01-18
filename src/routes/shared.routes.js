@@ -2,6 +2,7 @@ import express from 'express';
 import Banner from '../models/Banner.model.js';
 import Specialization from '../models/Specialization.model.js';
 import Hospital from '../models/Hospital.model.js';
+import { searchDoctors, getDoctorDetails } from '../controllers/patient.controller.js';
 import moment from 'moment';
 
 const router = express.Router();
@@ -70,6 +71,12 @@ router.get('/hospitals', async (req, res) => {
     });
   }
 });
+
+// Public doctor search (no authentication required)
+router.get('/doctors/search', searchDoctors);
+
+// Public doctor details (no authentication required)
+router.get('/doctors/:doctorId', getDoctorDetails);
 
 export default router;
 

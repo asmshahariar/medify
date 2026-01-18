@@ -11,7 +11,12 @@ import {
   linkDoctorToHospital,
   removeDoctorFromHospital,
   getHospitalAppointments,
-  getHospitalDashboard
+  getHospitalDashboard,
+  createHomeService,
+  getHomeServices,
+  getHomeService,
+  updateHomeService,
+  deleteHomeService
 } from '../controllers/hospital.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 import { checkHospitalOwnership } from '../middlewares/hospitalOwnership.middleware.js';
@@ -83,5 +88,32 @@ router.get('/:hospitalId/appointments', checkHospitalOwnership, getHospitalAppoi
 
 // Hospital Dashboard
 router.get('/:hospitalId/dashboard', checkHospitalOwnership, getHospitalDashboard);
+
+// Home Services Management
+router.post('/:hospitalId/home-services', checkHospitalOwnership, [
+  body('serviceType').trim().notEmpty().withMessage('Service type is required'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('note').optional().trim(),
+  body('availableTime.startTime').optional().matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Start time must be in HH:mm format'),
+  body('availableTime.endTime').optional().matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('End time must be in HH:mm format'),
+  body('offDays').optional().isArray().withMessage('Off days must be an array'),
+  body('offDays.*').optional().isInt({ min: 0, max: 6 }).withMessage('Each off day must be between 0 (Sunday) and 6 (Saturday)')
+], createHomeService);
+
+router.get('/:hospitalId/home-services', checkHospitalOwnership, getHomeServices);
+router.get('/:hospitalId/home-services/:serviceId', checkHospitalOwnership, getHomeService);
+
+router.put('/:hospitalId/home-services/:serviceId', checkHospitalOwnership, [
+  body('serviceType').optional().trim().notEmpty(),
+  body('price').optional().isFloat({ min: 0 }),
+  body('note').optional().trim(),
+  body('availableTime.startTime').optional().matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Start time must be in HH:mm format'),
+  body('availableTime.endTime').optional().matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('End time must be in HH:mm format'),
+  body('offDays').optional().isArray().withMessage('Off days must be an array'),
+  body('offDays.*').optional().isInt({ min: 0, max: 6 }).withMessage('Each off day must be between 0 (Sunday) and 6 (Saturday)'),
+  body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
+], updateHomeService);
+
+router.delete('/:hospitalId/home-services/:serviceId', checkHospitalOwnership, deleteHomeService);
 
 export default router;
