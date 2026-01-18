@@ -6,6 +6,7 @@ import Appointment from '../models/Appointment.model.js';
 import Chamber from '../models/Chamber.model.js';
 import HospitalSchedule from '../models/HospitalSchedule.model.js';
 import HomeService from '../models/HomeService.model.js';
+import SerialSettings from '../models/SerialSettings.model.js';
 import { validationResult } from 'express-validator';
 import moment from 'moment';
 
@@ -1264,6 +1265,267 @@ export const deleteHomeService = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete home service',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * POST /api/hospitals/:hospitalId/doctors/:doctorId/serial-settings
+ * Create or update serial settings for a hospital doctor
+ */
+export const createOrUpdateSerialSettings = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { hospitalId, doctorId } = req.params;
+    const { totalSerialsPerDay, serialTimeRange, appointmentPrice, availableDays, isActive } = req.body;
+
+    // Verify hospital exists and is approved
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    if (hospital.status !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: 'Hospital must be approved to manage serial settings'
+      });
+    }
+
+    // Verify doctor exists and is associated with hospital
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Doctor not found'
+      });
+    }
+
+    if (doctor.hospitalId?.toString() !== hospitalId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Doctor is not associated with this hospital'
+      });
+    }
+
+    // Validate time range
+    if (serialTimeRange) {
+      const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+      if (serialTimeRange.startTime && !timeRegex.test(serialTimeRange.startTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Start time must be in HH:mm format'
+        });
+      }
+      if (serialTimeRange.endTime && !timeRegex.test(serialTimeRange.endTime)) {
+        return res.status(400).json({
+          success: false,
+          message: 'End time must be in HH:mm format'
+        });
+      }
+
+      if (serialTimeRange.startTime && serialTimeRange.endTime) {
+        const [startHour, startMin] = serialTimeRange.startTime.split(':').map(Number);
+        const [endHour, endMin] = serialTimeRange.endTime.split(':').map(Number);
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = endHour * 60 + endMin;
+        
+        if (endMinutes <= startMinutes) {
+          return res.status(400).json({
+            success: false,
+            message: 'End time must be after start time'
+          });
+        }
+      }
+    }
+
+    // Find or create serial settings
+    let serialSettings = await SerialSettings.findOne({
+      doctorId,
+      hospitalId
+    });
+
+    if (serialSettings) {
+      // Update existing settings
+      if (totalSerialsPerDay !== undefined) serialSettings.totalSerialsPerDay = totalSerialsPerDay;
+      if (serialTimeRange !== undefined) serialSettings.serialTimeRange = serialTimeRange;
+      if (appointmentPrice !== undefined) serialSettings.appointmentPrice = appointmentPrice;
+      if (availableDays !== undefined) serialSettings.availableDays = availableDays;
+      if (isActive !== undefined) serialSettings.isActive = isActive;
+      
+      await serialSettings.save();
+    } else {
+      // Create new settings
+      serialSettings = await SerialSettings.create({
+        hospitalId,
+        doctorId,
+        totalSerialsPerDay: totalSerialsPerDay || 20,
+        serialTimeRange: serialTimeRange || { startTime: '09:00', endTime: '17:00' },
+        appointmentPrice: appointmentPrice || 0,
+        availableDays: availableDays || [],
+        isActive: isActive !== undefined ? isActive : true
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Serial settings saved successfully',
+      data: { serialSettings }
+    });
+  } catch (error) {
+    console.error('Create/update serial settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save serial settings',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/doctors/:doctorId/serial-settings
+ * Get serial settings for a hospital doctor
+ */
+export const getSerialSettings = async (req, res) => {
+  try {
+    const { hospitalId, doctorId } = req.params;
+
+    const serialSettings = await SerialSettings.findOne({
+      doctorId,
+      hospitalId
+    }).populate('doctorId', 'name email').populate('hospitalId', 'name');
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Serial settings not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { serialSettings }
+    });
+  } catch (error) {
+    console.error('Get serial settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch serial settings',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/doctors/:doctorId/serial-stats
+ * Get serial statistics for a hospital doctor
+ */
+export const getSerialStats = async (req, res) => {
+  try {
+    const { hospitalId, doctorId } = req.params;
+    const { date } = req.query;
+
+    const serialSettings = await SerialSettings.findOne({
+      doctorId,
+      hospitalId
+    });
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Serial settings not found'
+      });
+    }
+
+    // Build date range query
+    let dateQuery = {};
+    if (date) {
+      const startDate = moment(date).startOf('day').toDate();
+      const endDate = moment(date).endOf('day').toDate();
+      dateQuery = {
+        appointmentDate: {
+          $gte: startDate,
+          $lte: endDate
+        }
+      };
+    } else {
+      // Get stats for today
+      const startDate = moment().startOf('day').toDate();
+      const endDate = moment().endOf('day').toDate();
+      dateQuery = {
+        appointmentDate: {
+          $gte: startDate,
+          $lte: endDate
+        }
+      };
+    }
+
+    // Get booked serials
+    const bookedAppointments = await Appointment.find({
+      doctorId,
+      ...dateQuery,
+      status: { $in: ['pending', 'accepted'] }
+    }).populate('patientId', 'name email phone');
+
+    const totalBooked = bookedAppointments.length;
+    const availableSerials = serialSettings.totalSerialsPerDay;
+    const evenNumberedSerials = Math.floor(availableSerials / 2);
+    const bookedEvenSerials = bookedAppointments.filter(apt => {
+      // Extract serial number from notes or calculate from time
+      const notes = apt.notes || '';
+      const serialMatch = notes.match(/Serial #(\d+)/);
+      if (serialMatch) {
+        const serialNum = parseInt(serialMatch[1]);
+        return serialNum % 2 === 0;
+      }
+      return false;
+    }).length;
+
+    res.json({
+      success: true,
+      data: {
+        serialSettings: {
+          totalSerialsPerDay: serialSettings.totalSerialsPerDay,
+          evenNumberedSerialsAvailable: evenNumberedSerials,
+          appointmentPrice: serialSettings.appointmentPrice,
+          timeRange: serialSettings.serialTimeRange,
+          isActive: serialSettings.isActive
+        },
+        statistics: {
+          date: date || moment().format('YYYY-MM-DD'),
+          totalBooked: totalBooked,
+          bookedEvenSerials: bookedEvenSerials,
+          availableEvenSerials: evenNumberedSerials - bookedEvenSerials,
+          bookedPatients: bookedAppointments.map(apt => ({
+            appointmentNumber: apt.appointmentNumber,
+            patient: {
+              name: apt.patientId.name,
+              email: apt.patientId.email,
+              phone: apt.patientId.phone
+            },
+            time: apt.timeSlot?.startTime,
+            serialNumber: apt.notes ? apt.notes.match(/Serial #(\d+)/)?.[1] : null
+          }))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get serial stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch serial statistics',
       error: error.message
     });
   }

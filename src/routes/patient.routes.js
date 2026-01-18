@@ -14,7 +14,9 @@ import {
   getDiagnosticTests,
   createOrder,
   getMyOrders,
-  getSpecializations
+  getSpecializations,
+  getAvailableSerials,
+  bookSerial
 } from '../controllers/patient.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 
@@ -37,6 +39,14 @@ router.get('/doctors/search', searchDoctors);
 router.get('/doctors/:doctorId', getDoctorDetails);
 router.get('/doctors/:doctorId/slots', getAvailableSlots);
 router.get('/specializations', getSpecializations);
+
+// Serial booking
+router.get('/doctors/:doctorId/serials', getAvailableSerials);
+router.post('/serials/book', [
+  body('doctorId').notEmpty().withMessage('Doctor ID is required'),
+  body('serialNumber').isInt({ min: 1 }).withMessage('Valid serial number is required'),
+  body('date').isISO8601().withMessage('Valid date is required (YYYY-MM-DD)')
+], bookSerial);
 
 // Appointments
 router.post('/appointments', [

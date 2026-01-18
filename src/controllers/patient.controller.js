@@ -8,6 +8,7 @@ import Test from '../models/Test.model.js';
 import Order from '../models/Order.model.js';
 import Specialization from '../models/Specialization.model.js';
 import Schedule from '../models/Schedule.model.js';
+import SerialSettings from '../models/SerialSettings.model.js';
 import { generateAvailableSlots, lockSlot } from '../utils/slotGenerator.util.js';
 import { createAndSendNotification } from '../services/notification.service.js';
 import { generatePrescriptionPDF } from '../utils/pdfGenerator.util.js';
@@ -976,6 +977,416 @@ export const getSpecializations = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch specializations',
+      error: error.message
+    });
+  }
+};
+
+// Get available serials for a doctor
+export const getAvailableSerials = async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Date is required (format: YYYY-MM-DD)'
+      });
+    }
+
+    const appointmentDate = moment(date).startOf('day').toDate();
+    const dayOfWeek = moment(date).day(); // 0 = Sunday, 6 = Saturday
+
+    // Get doctor
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || doctor.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Doctor not found or not available'
+      });
+    }
+
+    // Check if doctor is associated with a hospital
+    const hospital = doctor.hospitalId 
+      ? await Hospital.findById(doctor.hospitalId)
+      : null;
+
+    // Get serial settings
+    let serialSettings;
+    if (hospital && hospital.status === 'approved') {
+      // Hospital-based doctor
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        hospitalId: hospital._id,
+        isActive: true
+      });
+    } else {
+      // Individual doctor
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        hospitalId: null,
+        isActive: true
+      });
+    }
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Serial settings not found for this doctor'
+      });
+    }
+
+    // Check if serials are available on this day
+    if (serialSettings.availableDays && serialSettings.availableDays.length > 0) {
+      if (!serialSettings.availableDays.includes(dayOfWeek)) {
+        return res.json({
+          success: true,
+          data: {
+            doctor: {
+              id: doctor._id,
+              name: doctor.name
+            },
+            date: date,
+            availableSerials: [],
+            totalSerials: serialSettings.totalSerialsPerDay,
+            message: 'No serials available on this day'
+          }
+        });
+      }
+    }
+
+    // Get booked serials for this date
+    const bookedAppointments = await Appointment.find({
+      doctorId,
+      appointmentDate: {
+        $gte: moment(date).startOf('day').toDate(),
+        $lte: moment(date).endOf('day').toDate()
+      },
+      status: { $in: ['pending', 'accepted'] }
+    }).select('timeSlot');
+
+    // Extract booked serial times
+    const bookedTimes = bookedAppointments.map(apt => apt.timeSlot?.startTime).filter(Boolean);
+
+    // Generate available serials (only even numbers)
+    const totalSerials = serialSettings.totalSerialsPerDay;
+    const availableSerials = [];
+    
+    // Calculate time slot duration
+    const [startHour, startMin] = serialSettings.serialTimeRange.startTime.split(':').map(Number);
+    const [endHour, endMin] = serialSettings.serialTimeRange.endTime.split(':').map(Number);
+    const startMinutes = startHour * 60 + startMin;
+    const endMinutes = endHour * 60 + endMin;
+    const totalMinutes = endMinutes - startMinutes;
+    const slotDuration = Math.floor(totalMinutes / totalSerials);
+
+    for (let i = 1; i <= totalSerials; i++) {
+      // Only include even-numbered serials
+      if (i % 2 === 0) {
+        const slotMinutes = startMinutes + (i - 1) * slotDuration;
+        const slotHour = Math.floor(slotMinutes / 60);
+        const slotMin = slotMinutes % 60;
+        const timeString = `${String(slotHour).padStart(2, '0')}:${String(slotMin).padStart(2, '0')}`;
+        
+        const endSlotMinutes = slotMinutes + slotDuration;
+        const endSlotHour = Math.floor(endSlotMinutes / 60);
+        const endSlotMin = endSlotMinutes % 60;
+        const endTimeString = `${String(endSlotHour).padStart(2, '0')}:${String(endSlotMin).padStart(2, '0')}`;
+
+        // Check if this time slot is already booked
+        const isBooked = bookedTimes.some(bt => bt === timeString);
+
+        if (!isBooked) {
+          availableSerials.push({
+            serialNumber: i,
+            time: timeString,
+            endTime: endTimeString,
+            available: true
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        doctor: {
+          id: doctor._id,
+          name: doctor.name,
+          profilePhotoUrl: doctor.profilePhotoUrl,
+          specialization: doctor.specialization,
+          qualifications: doctor.qualifications
+        },
+        hospital: hospital ? {
+          id: hospital._id,
+          name: hospital.name
+        } : null,
+        date: date,
+        availableSerials,
+        totalSerials: serialSettings.totalSerialsPerDay,
+        appointmentPrice: serialSettings.appointmentPrice,
+        timeRange: serialSettings.serialTimeRange,
+        bookedCount: bookedAppointments.length,
+        availableCount: availableSerials.length
+      }
+    });
+  } catch (error) {
+    console.error('Get available serials error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get available serials',
+      error: error.message
+    });
+  }
+};
+
+// Book a serial (appointment)
+export const bookSerial = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { doctorId, serialNumber, date } = req.body;
+
+    if (!serialNumber || serialNumber % 2 !== 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only even-numbered serials can be booked online'
+      });
+    }
+
+    const appointmentDate = moment(date).startOf('day').toDate();
+    const dayOfWeek = moment(date).day();
+
+    // Get doctor
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || doctor.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Doctor not found or not available'
+      });
+    }
+
+    // Check if doctor is associated with a hospital
+    const hospital = doctor.hospitalId 
+      ? await Hospital.findById(doctor.hospitalId).populate('admins', 'email name phone')
+      : null;
+
+    // Get serial settings
+    let serialSettings;
+    if (hospital && hospital.status === 'approved') {
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        hospitalId: hospital._id,
+        isActive: true
+      });
+    } else {
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        hospitalId: null,
+        isActive: true
+      });
+    }
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Serial settings not found for this doctor'
+      });
+    }
+
+    // Check if serials are available on this day
+    if (serialSettings.availableDays && serialSettings.availableDays.length > 0) {
+      if (!serialSettings.availableDays.includes(dayOfWeek)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Serials are not available on this day'
+        });
+      }
+    }
+
+    // Check if serial number is valid
+    if (serialNumber < 1 || serialNumber > serialSettings.totalSerialsPerDay) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid serial number'
+      });
+    }
+
+    // Calculate time slot for this serial number
+    const [startHour, startMin] = serialSettings.serialTimeRange.startTime.split(':').map(Number);
+    const [endHour, endMin] = serialSettings.serialTimeRange.endTime.split(':').map(Number);
+    const startMinutes = startHour * 60 + startMin;
+    const endMinutes = endHour * 60 + endMin;
+    const totalMinutes = endMinutes - startMinutes;
+    const slotDuration = Math.floor(totalMinutes / serialSettings.totalSerialsPerDay);
+    
+    const slotMinutes = startMinutes + (serialNumber - 1) * slotDuration;
+    const slotHour = Math.floor(slotMinutes / 60);
+    const slotMin = slotMinutes % 60;
+    const startTime = `${String(slotHour).padStart(2, '0')}:${String(slotMin).padStart(2, '0')}`;
+    
+    const endSlotMinutes = slotMinutes + slotDuration;
+    const endSlotHour = Math.floor(endSlotMinutes / 60);
+    const endSlotMin = endSlotMinutes % 60;
+    const endTime = `${String(endSlotHour).padStart(2, '0')}:${String(endSlotMin).padStart(2, '0')}`;
+
+    // Check if this time slot is already booked
+    const existingAppointment = await Appointment.findOne({
+      doctorId,
+      appointmentDate: {
+        $gte: moment(date).startOf('day').toDate(),
+        $lte: moment(date).endOf('day').toDate()
+      },
+      'timeSlot.startTime': startTime,
+      status: { $in: ['pending', 'accepted'] }
+    });
+
+    if (existingAppointment) {
+      return res.status(400).json({
+        success: false,
+        message: 'This serial is already booked'
+      });
+    }
+
+    // Get or create a chamber for the doctor
+    let chamber = await Chamber.findOne({ doctorId, isActive: true });
+    if (!chamber) {
+      // Create a default chamber if none exists
+      chamber = await Chamber.create({
+        doctorId,
+        hospitalId: hospital ? hospital._id : null,
+        name: `${doctor.name}'s Chamber`,
+        consultationFee: serialSettings.appointmentPrice,
+        followUpFee: serialSettings.appointmentPrice,
+        isActive: true
+      });
+    }
+
+    // Generate appointment number
+    const appointmentNumber = `SR-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+    // Create appointment
+    const appointment = await Appointment.create({
+      patientId: req.user._id,
+      doctorId,
+      chamberId: chamber._id,
+      appointmentDate,
+      timeSlot: {
+        startTime,
+        endTime,
+        sessionDuration: slotDuration
+      },
+      appointmentNumber,
+      consultationType: 'new',
+      fee: serialSettings.appointmentPrice,
+      status: 'pending',
+      paymentStatus: 'pending',
+      notes: `Serial #${serialNumber}`
+    });
+
+    const io = req.app.get('io');
+
+    // Get patient information
+    const patient = await User.findById(req.user._id);
+    const patientInfo = {
+      name: patient.name,
+      email: patient.email,
+      phone: patient.phone,
+      appointmentNumber: appointmentNumber,
+      serialNumber: serialNumber,
+      date: moment(date).format('YYYY-MM-DD'),
+      time: startTime,
+      doctorName: doctor.name
+    };
+
+    // Send notification to doctor
+    if (doctor.userId) {
+      await createAndSendNotification(
+        io,
+        doctor.userId,
+        'appointment_created',
+        'New Serial Booking',
+        `You have a new serial booking (Serial #${serialNumber}) from ${patient.name}`,
+        appointment._id,
+        'appointment'
+      );
+    }
+
+    // Send patient information to hospital admin or doctor
+    if (hospital && hospital.admins && hospital.admins.length > 0) {
+      // Send to all hospital admins
+      for (const admin of hospital.admins) {
+        if (admin._id) {
+          await createAndSendNotification(
+            io,
+            admin._id,
+            'appointment_created',
+            'New Serial Booking',
+            `New serial booking for Dr. ${doctor.name}: ${patient.name} (${patient.email}, ${patient.phone}) - Serial #${serialNumber}`,
+            appointment._id,
+            'appointment'
+          );
+        }
+      }
+    } else {
+      // Send to doctor directly (already sent above, but include patient info)
+      if (doctor.userId) {
+        await createAndSendNotification(
+          io,
+          doctor.userId,
+          'appointment_created',
+          'New Serial Booking - Patient Info',
+          `Patient: ${patient.name}, Email: ${patient.email}, Phone: ${patient.phone}, Serial #${serialNumber}`,
+          appointment._id,
+          'appointment'
+        );
+      }
+    }
+
+    // Send notification to patient
+    await createAndSendNotification(
+      io,
+      req.user._id,
+      'appointment_created',
+      'Serial Booked Successfully',
+      `Your serial #${serialNumber} is booked for ${moment(date).format('MMMM DD, YYYY')} at ${startTime}`,
+      appointment._id,
+      'appointment'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Serial booked successfully',
+      data: {
+        appointment: {
+          ...appointment.toObject(),
+          serialNumber,
+          patientInfo
+        },
+        doctor: {
+          id: doctor._id,
+          name: doctor.name,
+          specialization: doctor.specialization
+        },
+        hospital: hospital ? {
+          id: hospital._id,
+          name: hospital.name
+        } : null
+      }
+    });
+  } catch (error) {
+    console.error('Book serial error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to book serial',
       error: error.message
     });
   }

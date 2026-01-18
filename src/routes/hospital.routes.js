@@ -16,7 +16,10 @@ import {
   getHomeServices,
   getHomeService,
   updateHomeService,
-  deleteHomeService
+  deleteHomeService,
+  createOrUpdateSerialSettings,
+  getSerialSettings,
+  getSerialStats
 } from '../controllers/hospital.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 import { checkHospitalOwnership } from '../middlewares/hospitalOwnership.middleware.js';
@@ -115,5 +118,19 @@ router.put('/:hospitalId/home-services/:serviceId', checkHospitalOwnership, [
 ], updateHomeService);
 
 router.delete('/:hospitalId/home-services/:serviceId', checkHospitalOwnership, deleteHomeService);
+
+// Serial Settings Management for Hospital Doctors
+router.post('/:hospitalId/doctors/:doctorId/serial-settings', checkHospitalOwnership, [
+  body('totalSerialsPerDay').isInt({ min: 1 }).withMessage('Total serials per day must be a positive integer'),
+  body('serialTimeRange.startTime').matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Start time must be in HH:mm format'),
+  body('serialTimeRange.endTime').matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('End time must be in HH:mm format'),
+  body('appointmentPrice').isFloat({ min: 0 }).withMessage('Appointment price must be a positive number'),
+  body('availableDays').optional().isArray().withMessage('Available days must be an array'),
+  body('availableDays.*').optional().isInt({ min: 0, max: 6 }).withMessage('Each day must be between 0 (Sunday) and 6 (Saturday)'),
+  body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
+], createOrUpdateSerialSettings);
+
+router.get('/:hospitalId/doctors/:doctorId/serial-settings', checkHospitalOwnership, getSerialSettings);
+router.get('/:hospitalId/doctors/:doctorId/serial-stats', checkHospitalOwnership, getSerialStats);
 
 export default router;
