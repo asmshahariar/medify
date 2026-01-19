@@ -6,7 +6,9 @@ import Appointment from '../models/Appointment.model.js';
 import Chamber from '../models/Chamber.model.js';
 import HospitalSchedule from '../models/HospitalSchedule.model.js';
 import HomeService from '../models/HomeService.model.js';
+import HomeServiceRequest from '../models/HomeServiceRequest.model.js';
 import SerialSettings from '../models/SerialSettings.model.js';
+import { createAndSendNotification } from '../services/notification.service.js';
 import { validationResult } from 'express-validator';
 import moment from 'moment';
 
@@ -1526,6 +1528,265 @@ export const getSerialStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch serial statistics',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/home-service-requests
+ * Get all home service requests for a hospital
+ */
+export const getHomeServiceRequests = async (req, res) => {
+  try {
+    const { hospitalId } = req.params;
+    const { status, page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    // Build query
+    const query = { hospitalId };
+    if (status) {
+      query.status = status;
+    }
+
+    const requests = await HomeServiceRequest.find(query)
+      .populate('patientId', 'name email phone')
+      .populate('homeServiceId', 'serviceType price note')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await HomeServiceRequest.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: {
+        requests,
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get home service requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home service requests',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/hospitals/:hospitalId/home-service-requests/:requestId
+ * Get a specific home service request
+ */
+export const getHomeServiceRequest = async (req, res) => {
+  try {
+    const { hospitalId, requestId } = req.params;
+
+    const request = await HomeServiceRequest.findOne({
+      _id: requestId,
+      hospitalId
+    })
+      .populate('patientId', 'name email phone')
+      .populate('homeServiceId', 'serviceType price note availableTime')
+      .populate('acceptedBy', 'name email')
+      .populate('rejectedBy', 'name email');
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service request not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { request }
+    });
+  } catch (error) {
+    console.error('Get home service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home service request',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * PUT /api/hospitals/:hospitalId/home-service-requests/:requestId/accept
+ * Accept a home service request
+ */
+export const acceptHomeServiceRequest = async (req, res) => {
+  try {
+    const { hospitalId, requestId } = req.params;
+    const { notes } = req.body;
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    const request = await HomeServiceRequest.findOne({
+      _id: requestId,
+      hospitalId
+    }).populate('patientId', 'name email phone');
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service request not found'
+      });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Request cannot be accepted. Current status: ${request.status}`
+      });
+    }
+
+    // Update request status
+    request.status = 'accepted';
+    request.acceptedAt = new Date();
+    request.acceptedBy = req.user._id;
+    if (notes) {
+      request.notes = notes;
+    }
+    await request.save();
+
+    const io = req.app.get('io');
+
+    // Send notification to patient
+    await createAndSendNotification(
+      io,
+      request.patientId._id,
+      'order_status_update',
+      'Home Service Request Accepted',
+      `Your home service request #${request.requestNumber} has been accepted by ${hospital.name}`,
+      request._id,
+      'order'
+    );
+
+    res.json({
+      success: true,
+      message: 'Home service request accepted successfully',
+      data: { request }
+    });
+  } catch (error) {
+    console.error('Accept home service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to accept home service request',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * PUT /api/hospitals/:hospitalId/home-service-requests/:requestId/reject
+ * Reject a home service request
+ */
+export const rejectHomeServiceRequest = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { hospitalId, requestId } = req.params;
+    const { rejectionReason } = req.body;
+
+    if (!rejectionReason || rejectionReason.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rejection reason is required'
+      });
+    }
+
+    // Verify hospital exists
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found'
+      });
+    }
+
+    const request = await HomeServiceRequest.findOne({
+      _id: requestId,
+      hospitalId
+    }).populate('patientId', 'name email phone');
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service request not found'
+      });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Request cannot be rejected. Current status: ${request.status}`
+      });
+    }
+
+    // Update request status
+    request.status = 'rejected';
+    request.rejectedAt = new Date();
+    request.rejectedBy = req.user._id;
+    request.rejectionReason = rejectionReason.trim();
+    await request.save();
+
+    const io = req.app.get('io');
+
+    // Send notification to patient
+    await createAndSendNotification(
+      io,
+      request.patientId._id,
+      'order_status_update',
+      'Home Service Request Rejected',
+      `Your home service request #${request.requestNumber} has been rejected. Reason: ${rejectionReason}`,
+      request._id,
+      'order'
+    );
+
+    res.json({
+      success: true,
+      message: 'Home service request rejected successfully',
+      data: { request }
+    });
+  } catch (error) {
+    console.error('Reject home service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject home service request',
       error: error.message
     });
   }

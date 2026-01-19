@@ -9,6 +9,8 @@ import Order from '../models/Order.model.js';
 import Specialization from '../models/Specialization.model.js';
 import Schedule from '../models/Schedule.model.js';
 import SerialSettings from '../models/SerialSettings.model.js';
+import HomeService from '../models/HomeService.model.js';
+import HomeServiceRequest from '../models/HomeServiceRequest.model.js';
 import { generateAvailableSlots, lockSlot } from '../utils/slotGenerator.util.js';
 import { createAndSendNotification } from '../services/notification.service.js';
 import { generatePrescriptionPDF } from '../utils/pdfGenerator.util.js';
@@ -1387,6 +1389,401 @@ export const bookSerial = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to book serial',
+      error: error.message
+    });
+  }
+};
+
+// Get all home services (public - can be accessed without auth or with patient auth)
+export const getAllHomeServices = async (req, res) => {
+  try {
+    const { hospitalId, serviceType, page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build query
+    const query = { isActive: true };
+
+    if (hospitalId) {
+      // Verify hospital exists and is approved
+      const hospital = await Hospital.findById(hospitalId);
+      if (!hospital || hospital.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Hospital not found or not approved'
+        });
+      }
+      query.hospitalId = hospitalId;
+    }
+
+    if (serviceType) {
+      query.serviceType = { $regex: serviceType, $options: 'i' };
+    }
+
+    // Get home services
+    const homeServices = await HomeService.find(query)
+      .populate('hospitalId', 'name address logo contactInfo')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await HomeService.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: {
+        homeServices: homeServices.map(service => ({
+          ...service.toObject(),
+          hospital: service.hospitalId ? {
+            id: service.hospitalId._id,
+            name: service.hospitalId.name,
+            address: service.hospitalId.address,
+            logo: service.hospitalId.logo,
+            contactInfo: service.hospitalId.contactInfo
+          } : null
+        })),
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get all home services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home services',
+      error: error.message
+    });
+  }
+};
+
+// Get home service details
+export const getHomeServiceDetails = async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+
+    const homeService = await HomeService.findById(serviceId)
+      .populate('hospitalId', 'name address logo contactInfo departments');
+
+    if (!homeService || !homeService.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not found'
+      });
+    }
+
+    // Verify hospital is approved
+    const hospital = await Hospital.findById(homeService.hospitalId);
+    if (hospital && hospital.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not available'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        homeService: {
+          ...homeService.toObject(),
+          hospital: homeService.hospitalId ? {
+            id: homeService.hospitalId._id,
+            name: homeService.hospitalId.name,
+            address: homeService.hospitalId.address,
+            logo: homeService.hospitalId.logo,
+            contactInfo: homeService.hospitalId.contactInfo,
+            departments: homeService.hospitalId.departments
+          } : null
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get home service details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch home service details',
+      error: error.message
+    });
+  }
+};
+
+// Submit home service request
+export const submitHomeServiceRequest = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const {
+      hospitalId,
+      homeServiceId,
+      patientName,
+      patientAge,
+      patientGender,
+      homeAddress,
+      phoneNumber,
+      requestedDate,
+      requestedTime,
+      notes
+    } = req.body;
+
+    // Verify hospital exists and is approved
+    const hospital = await Hospital.findById(hospitalId).populate('admins', 'email name phone');
+    if (!hospital || hospital.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Hospital not found or not approved'
+      });
+    }
+
+    // Verify home service exists and is active
+    const homeService = await HomeService.findOne({
+      _id: homeServiceId,
+      hospitalId,
+      isActive: true
+    });
+
+    if (!homeService) {
+      return res.status(404).json({
+        success: false,
+        message: 'Home service not found or not available'
+      });
+    }
+
+    // Generate request number
+    const requestNumber = `HSR-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+    // Create home service request
+    const request = await HomeServiceRequest.create({
+      patientId: req.user._id,
+      hospitalId,
+      homeServiceId,
+      requestNumber,
+      patientName,
+      patientAge,
+      patientGender,
+      homeAddress,
+      phoneNumber,
+      serviceType: homeService.serviceType,
+      servicePrice: homeService.price,
+      serviceNote: homeService.note,
+      requestedDate: requestedDate ? new Date(requestedDate) : null,
+      requestedTime: requestedTime || null,
+      notes: notes || '',
+      status: 'pending'
+    });
+
+    const io = req.app.get('io');
+
+    // Send notification to all hospital admins
+    if (hospital.admins && hospital.admins.length > 0) {
+      for (const admin of hospital.admins) {
+        if (admin._id) {
+          await createAndSendNotification(
+            io,
+            admin._id,
+            'order_created',
+            'New Home Service Request',
+            `New home service request: ${patientName} (${phoneNumber}) - ${homeService.serviceType}`,
+            request._id,
+            'order'
+          );
+        }
+      }
+    }
+
+    // Send notification to patient
+    await createAndSendNotification(
+      io,
+      req.user._id,
+      'order_created',
+      'Home Service Request Submitted',
+      `Your home service request (${homeService.serviceType}) has been submitted. Request #${requestNumber}`,
+      request._id,
+      'order'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Home service request submitted successfully',
+      data: {
+        request: {
+          ...request.toObject(),
+          hospital: {
+            id: hospital._id,
+            name: hospital.name
+          },
+          service: {
+            id: homeService._id,
+            serviceType: homeService.serviceType,
+            price: homeService.price
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Submit home service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit home service request',
+      error: error.message
+    });
+  }
+};
+
+// Get user's complete history (serials + home service requests)
+export const getMyHistory = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, type } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const patientId = req.user._id;
+    const history = [];
+
+    // Get serials/appointments if type is 'serials' or 'all'
+    if (!type || type === 'serials' || type === 'all') {
+      const appointments = await Appointment.find({ patientId })
+        .populate('doctorId', 'name specialization profilePhotoUrl')
+        .populate('chamberId', 'name address')
+        .populate({
+          path: 'chamberId',
+          populate: {
+            path: 'hospitalId',
+            select: 'name address logo'
+          }
+        })
+        .sort({ appointmentDate: -1, createdAt: -1 })
+        .skip(type === 'serials' ? skip : 0)
+        .limit(type === 'serials' ? parseInt(limit) : 1000);
+
+      appointments.forEach(apt => {
+        const serialMatch = apt.notes ? apt.notes.match(/Serial #(\d+)/) : null;
+        history.push({
+          type: 'serial',
+          id: apt._id,
+          requestNumber: apt.appointmentNumber,
+          serialNumber: serialMatch ? serialMatch[1] : null,
+          doctor: apt.doctorId ? {
+            id: apt.doctorId._id,
+            name: apt.doctorId.name,
+            specialization: apt.doctorId.specialization,
+            profilePhotoUrl: apt.doctorId.profilePhotoUrl
+          } : null,
+          hospital: apt.chamberId?.hospitalId ? {
+            id: apt.chamberId.hospitalId._id,
+            name: apt.chamberId.hospitalId.name,
+            address: apt.chamberId.hospitalId.address,
+            logo: apt.chamberId.hospitalId.logo
+          } : null,
+          chamber: apt.chamberId ? {
+            id: apt.chamberId._id,
+            name: apt.chamberId.name,
+            address: apt.chamberId.address
+          } : null,
+          date: apt.appointmentDate,
+          time: apt.timeSlot?.startTime,
+          endTime: apt.timeSlot?.endTime,
+          fee: apt.fee,
+          status: apt.status,
+          paymentStatus: apt.paymentStatus,
+          createdAt: apt.createdAt,
+          updatedAt: apt.updatedAt
+        });
+      });
+    }
+
+    // Get home service requests if type is 'home_services' or 'all'
+    if (!type || type === 'home_services' || type === 'all') {
+      const homeServiceRequests = await HomeServiceRequest.find({ patientId })
+        .populate('hospitalId', 'name address logo contactInfo')
+        .populate('homeServiceId', 'serviceType price note availableTime')
+        .sort({ createdAt: -1 })
+        .skip(type === 'home_services' ? skip : 0)
+        .limit(type === 'home_services' ? parseInt(limit) : 1000);
+
+      homeServiceRequests.forEach(req => {
+        history.push({
+          type: 'home_service',
+          id: req._id,
+          requestNumber: req.requestNumber,
+          hospital: req.hospitalId ? {
+            id: req.hospitalId._id,
+            name: req.hospitalId.name,
+            address: req.hospitalId.address,
+            logo: req.hospitalId.logo,
+            contactInfo: req.hospitalId.contactInfo
+          } : null,
+          service: req.homeServiceId ? {
+            id: req.homeServiceId._id,
+            serviceType: req.homeServiceId.serviceType,
+            price: req.homeServiceId.price,
+            note: req.homeServiceId.note,
+            availableTime: req.homeServiceId.availableTime
+          } : null,
+          patientName: req.patientName,
+          patientAge: req.patientAge,
+          patientGender: req.patientGender,
+          homeAddress: req.homeAddress,
+          phoneNumber: req.phoneNumber,
+          requestedDate: req.requestedDate,
+          requestedTime: req.requestedTime,
+          status: req.status,
+          rejectionReason: req.rejectionReason,
+          notes: req.notes,
+          createdAt: req.createdAt,
+          updatedAt: req.updatedAt,
+          acceptedAt: req.acceptedAt,
+          rejectedAt: req.rejectedAt,
+          completedAt: req.completedAt
+        });
+      });
+    }
+
+    // Sort by creation date (most recent first)
+    history.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Apply pagination if type is 'all'
+    let paginatedHistory = history;
+    let total = history.length;
+    if (type === 'all') {
+      paginatedHistory = history.slice(skip, skip + parseInt(limit));
+      total = history.length;
+    } else if (type === 'serials') {
+      total = await Appointment.countDocuments({ patientId });
+    } else if (type === 'home_services') {
+      total = await HomeServiceRequest.countDocuments({ patientId });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        history: paginatedHistory,
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get my history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch history',
       error: error.message
     });
   }

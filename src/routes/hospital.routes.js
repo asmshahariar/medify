@@ -19,7 +19,11 @@ import {
   deleteHomeService,
   createOrUpdateSerialSettings,
   getSerialSettings,
-  getSerialStats
+  getSerialStats,
+  getHomeServiceRequests,
+  getHomeServiceRequest,
+  acceptHomeServiceRequest,
+  rejectHomeServiceRequest
 } from '../controllers/hospital.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 import { checkHospitalOwnership } from '../middlewares/hospitalOwnership.middleware.js';
@@ -132,5 +136,13 @@ router.post('/:hospitalId/doctors/:doctorId/serial-settings', checkHospitalOwner
 
 router.get('/:hospitalId/doctors/:doctorId/serial-settings', checkHospitalOwnership, getSerialSettings);
 router.get('/:hospitalId/doctors/:doctorId/serial-stats', checkHospitalOwnership, getSerialStats);
+
+// Home Service Requests Management
+router.get('/:hospitalId/home-service-requests', checkHospitalOwnership, getHomeServiceRequests);
+router.get('/:hospitalId/home-service-requests/:requestId', checkHospitalOwnership, getHomeServiceRequest);
+router.put('/:hospitalId/home-service-requests/:requestId/accept', checkHospitalOwnership, acceptHomeServiceRequest);
+router.put('/:hospitalId/home-service-requests/:requestId/reject', checkHospitalOwnership, [
+  body('rejectionReason').trim().notEmpty().withMessage('Rejection reason is required')
+], rejectHomeServiceRequest);
 
 export default router;

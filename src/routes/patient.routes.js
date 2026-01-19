@@ -16,7 +16,11 @@ import {
   getMyOrders,
   getSpecializations,
   getAvailableSerials,
-  bookSerial
+  bookSerial,
+  getAllHomeServices,
+  getHomeServiceDetails,
+  submitHomeServiceRequest,
+  getMyHistory
 } from '../controllers/patient.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 
@@ -47,6 +51,25 @@ router.post('/serials/book', [
   body('serialNumber').isInt({ min: 1 }).withMessage('Valid serial number is required'),
   body('date').isISO8601().withMessage('Valid date is required (YYYY-MM-DD)')
 ], bookSerial);
+
+// Home Services
+router.get('/home-services', getAllHomeServices);
+router.get('/home-services/:serviceId', getHomeServiceDetails);
+router.post('/home-services/request', [
+  body('hospitalId').notEmpty().withMessage('Hospital ID is required'),
+  body('homeServiceId').notEmpty().withMessage('Home service ID is required'),
+  body('patientName').trim().notEmpty().withMessage('Patient name is required'),
+  body('patientAge').isInt({ min: 0 }).withMessage('Valid patient age is required'),
+  body('patientGender').isIn(['male', 'female', 'other']).withMessage('Valid gender is required'),
+  body('homeAddress.street').trim().notEmpty().withMessage('Street address is required'),
+  body('homeAddress.city').trim().notEmpty().withMessage('City is required'),
+  body('phoneNumber').trim().notEmpty().withMessage('Phone number is required'),
+  body('requestedDate').optional().isISO8601().withMessage('Valid requested date is required'),
+  body('requestedTime').optional().matches(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Requested time must be in HH:mm format')
+], submitHomeServiceRequest);
+
+// User History
+router.get('/history', getMyHistory);
 
 // Appointments
 router.post('/appointments', [
