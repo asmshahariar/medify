@@ -201,68 +201,83 @@ export const addDoctorByHospital = async (req, res) => {
       });
     }
 
-    // Check if doctor already exists (email or phone)
-    const existingDoctorByEmail = await Doctor.findOne({
-      $or: [{ email }, { phone }]
+    // Check if doctor already exists (email, phone, or medical license number)
+    // If exists, link them to this hospital instead of creating new
+    let doctor = await Doctor.findOne({
+      $or: [
+        { email },
+        { phone },
+        { medicalLicenseNumber }
+      ]
     });
 
-    if (existingDoctorByEmail) {
-      return res.status(400).json({
-        success: false,
-        message: 'Doctor already exists with this email or phone'
+    if (doctor) {
+      // Doctor already exists - link them to this hospital
+      // Check if already linked to this hospital
+      const alreadyLinked = hospital.associatedDoctors.some(
+        ad => ad.doctor.toString() === doctor._id.toString()
+      );
+
+      if (alreadyLinked) {
+        return res.status(409).json({
+          success: false,
+          message: 'Doctor is already associated with this hospital'
+        });
+      }
+
+      // Update doctor's hospitalId if not set, or keep existing if already set to another hospital
+      // Note: A doctor can have multiple hospital associations via associatedDoctors array
+      if (!doctor.hospitalId) {
+        doctor.hospitalId = hospitalId;
+        await doctor.save();
+      }
+
+      // Add doctor to hospital's associated doctors
+      hospital.associatedDoctors.push({
+        doctor: doctor._id,
+        joinedAt: new Date()
       });
-    }
-
-    // Check if medical license number already exists
-    const existingDoctorByLicense = await Doctor.findOne({ medicalLicenseNumber });
-    if (existingDoctorByLicense) {
-      return res.status(400).json({
-        success: false,
-        message: 'Medical license number already exists'
+      await hospital.save();
+    } else {
+      // Check User table to prevent conflicts
+      const existingUser = await User.findOne({
+        $or: [{ email }, { phone }]
       });
-    }
 
-    // Also check User table to prevent conflicts
-    const existingUser = await User.findOne({
-      $or: [{ email }, { phone }]
-    });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email or phone already registered as a user'
+        });
+      }
 
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email or phone already registered as a user'
+      // Create new doctor record
+      const doctorData = {
+        name,
+        email,
+        phone,
+        password, // Will be hashed by pre-save hook
+        bmdcNo: medicalLicenseNumber,
+        medicalLicenseNumber,
+        licenseDocumentUrl: licenseDocumentUrl || '',
+        specialization: Array.isArray(specialization) ? specialization : [specialization],
+        qualifications: qualifications || '',
+        experienceYears,
+        chamber: chamber || null,
+        hospitalId,
+        profilePhotoUrl: profilePhotoUrl || '',
+        status: 'approved' // Auto-approved when added by hospital admin
+      };
+      
+      doctor = await Doctor.create(doctorData);
+
+      // Add doctor to hospital's associated doctors
+      hospital.associatedDoctors.push({
+        doctor: doctor._id,
+        joinedAt: new Date()
       });
+      await hospital.save();
     }
-
-    // Create doctor record directly in doctors table (NO user record created)
-    // Set bmdcNo to medicalLicenseNumber for backward compatibility (prevents null duplicate key error)
-    // DO NOT set userId at all - leave it undefined to avoid index conflicts
-    const doctorData = {
-      name,
-      email,
-      phone,
-      password, // Will be hashed by pre-save hook
-      bmdcNo: medicalLicenseNumber, // Set to medicalLicenseNumber to avoid null duplicate key error
-      medicalLicenseNumber,
-      licenseDocumentUrl: licenseDocumentUrl || '', // Optional - can be uploaded later
-      specialization: Array.isArray(specialization) ? specialization : [specialization],
-      qualifications: qualifications || '',
-      experienceYears,
-      chamber: chamber || null,
-      hospitalId,
-      profilePhotoUrl: profilePhotoUrl || '',
-      status: 'approved' // Auto-approved when added by hospital admin
-      // userId is NOT set - leave it undefined (not null) to avoid sparse index conflicts
-    };
-    
-    const doctor = await Doctor.create(doctorData);
-
-    // Add doctor to hospital's associated doctors
-    hospital.associatedDoctors.push({
-      doctor: doctor._id,
-      joinedAt: new Date()
-    });
-    await hospital.save();
 
     // Log approval action
     await logApproval(
@@ -708,8 +723,10 @@ export const linkDoctorToHospital = async (req, res) => {
       joinedAt: new Date()
     });
 
-    // Update doctor's hospitalId if not set
-    if (!doctor.hospitalId || doctor.hospitalId.toString() !== hospitalId) {
+    // Update doctor's hospitalId if not set, or keep existing if already set to another hospital
+    // Note: A doctor can have multiple hospital associations via associatedDoctors array
+    // The hospitalId field stores the primary hospital, but associatedDoctors tracks all associations
+    if (!doctor.hospitalId) {
       doctor.hospitalId = hospitalId;
       await doctor.save();
     }

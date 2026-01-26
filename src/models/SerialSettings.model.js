@@ -5,22 +5,19 @@ const serialSettingsSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
-    default: null,
-    index: true
+    default: null
   },
   // For diagnostic center-based doctors
   diagnosticCenterId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'DiagnosticCenter',
-    default: null,
-    index: true
+    default: null
   },
   // For individual doctors (not under hospital or diagnostic center)
   doctorId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor',
-    required: true,
-    index: true
+    required: true
   },
   // Chamber ID (optional, for hospital doctors with specific chambers)
   chamberId: {
@@ -91,16 +88,12 @@ serialSettingsSchema.pre('save', function(next) {
       return next(new Error('End time must be after start time'));
     }
   }
-  // Ensure doctor is not associated with both hospital and diagnostic center
-  if (this.hospitalId && this.diagnosticCenterId) {
-    return next(new Error('Doctor cannot be associated with both hospital and diagnostic center'));
-  }
+  // Note: A doctor can have multiple SerialSettings - one per hospital, one per diagnostic center, and one for individual practice
+  // This validation is removed to allow multiple associations
   next();
 });
 
 // Indexes for efficient queries
-serialSettingsSchema.index({ doctorId: 1, hospitalId: 1 });
-serialSettingsSchema.index({ doctorId: 1, diagnosticCenterId: 1 });
 serialSettingsSchema.index({ doctorId: 1, isActive: 1 });
 serialSettingsSchema.index({ hospitalId: 1, doctorId: 1 });
 serialSettingsSchema.index({ diagnosticCenterId: 1, doctorId: 1 });

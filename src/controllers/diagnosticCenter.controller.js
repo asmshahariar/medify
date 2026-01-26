@@ -1834,65 +1834,83 @@ export const addDoctorByDiagnosticCenter = async (req, res) => {
       });
     }
 
-    // Check if doctor already exists (email or phone)
-    const existingDoctorByEmail = await Doctor.findOne({
-      $or: [{ email }, { phone }]
+    // Check if doctor already exists (email, phone, or medical license number)
+    // If exists, link them to this diagnostic center instead of creating new
+    let doctor = await Doctor.findOne({
+      $or: [
+        { email },
+        { phone },
+        { medicalLicenseNumber }
+      ]
     });
 
-    if (existingDoctorByEmail) {
-      return res.status(400).json({
-        success: false,
-        message: 'Doctor already exists with this email or phone'
+    if (doctor) {
+      // Doctor already exists - link them to this diagnostic center
+      // Check if already linked to this diagnostic center
+      const alreadyLinked = diagnosticCenter.associatedDoctors.some(
+        ad => ad.doctor.toString() === doctor._id.toString()
+      );
+
+      if (alreadyLinked) {
+        return res.status(409).json({
+          success: false,
+          message: 'Doctor is already associated with this diagnostic center'
+        });
+      }
+
+      // Update doctor's diagnosticCenterId if not set, or keep existing if already set to another center
+      // Note: A doctor can have multiple diagnostic center associations via associatedDoctors array
+      if (!doctor.diagnosticCenterId) {
+        doctor.diagnosticCenterId = centerId;
+        await doctor.save();
+      }
+
+      // Add doctor to diagnostic center's associated doctors
+      diagnosticCenter.associatedDoctors.push({
+        doctor: doctor._id,
+        joinedAt: new Date()
       });
-    }
-
-    // Check if medical license number already exists
-    const existingDoctorByLicense = await Doctor.findOne({ medicalLicenseNumber });
-    if (existingDoctorByLicense) {
-      return res.status(400).json({
-        success: false,
-        message: 'Medical license number already exists'
+      await diagnosticCenter.save();
+    } else {
+      // Check User table to prevent conflicts
+      const existingUser = await User.findOne({
+        $or: [{ email }, { phone }]
       });
-    }
 
-    // Also check User table to prevent conflicts
-    const existingUser = await User.findOne({
-      $or: [{ email }, { phone }]
-    });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email or phone already registered as a user'
+        });
+      }
 
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email or phone already registered as a user'
+      // Create new doctor record
+      const doctorData = {
+        name,
+        email,
+        phone,
+        password, // Will be hashed by pre-save hook
+        bmdcNo: medicalLicenseNumber,
+        medicalLicenseNumber,
+        licenseDocumentUrl: licenseDocumentUrl || '',
+        specialization: Array.isArray(specialization) ? specialization : [specialization],
+        qualifications: qualifications || '',
+        experienceYears,
+        chamber: chamber || null,
+        diagnosticCenterId: centerId,
+        profilePhotoUrl: profilePhotoUrl || '',
+        status: 'approved' // Auto-approved when added by diagnostic center admin
+      };
+      
+      doctor = await Doctor.create(doctorData);
+
+      // Add doctor to diagnostic center's associated doctors
+      diagnosticCenter.associatedDoctors.push({
+        doctor: doctor._id,
+        joinedAt: new Date()
       });
+      await diagnosticCenter.save();
     }
-
-    // Create doctor record directly in doctors table
-    const doctorData = {
-      name,
-      email,
-      phone,
-      password, // Will be hashed by pre-save hook
-      bmdcNo: medicalLicenseNumber,
-      medicalLicenseNumber,
-      licenseDocumentUrl: licenseDocumentUrl || '',
-      specialization: Array.isArray(specialization) ? specialization : [specialization],
-      qualifications: qualifications || '',
-      experienceYears,
-      chamber: chamber || null,
-      diagnosticCenterId: centerId,
-      profilePhotoUrl: profilePhotoUrl || '',
-      status: 'approved' // Auto-approved when added by diagnostic center admin
-    };
-    
-    const doctor = await Doctor.create(doctorData);
-
-    // Add doctor to diagnostic center's associated doctors
-    diagnosticCenter.associatedDoctors.push({
-      doctor: doctor._id,
-      joinedAt: new Date()
-    });
-    await diagnosticCenter.save();
 
     // Log approval action
     await logApproval(
@@ -2043,8 +2061,10 @@ export const linkDoctorToDiagnosticCenter = async (req, res) => {
       joinedAt: new Date()
     });
 
-    // Update doctor's diagnosticCenterId if not set
-    if (!doctor.diagnosticCenterId || doctor.diagnosticCenterId.toString() !== centerId) {
+    // Update doctor's diagnosticCenterId if not set, or keep existing if already set to another center
+    // Note: A doctor can have multiple diagnostic center associations via associatedDoctors array
+    // The diagnosticCenterId field stores the primary center, but associatedDoctors tracks all associations
+    if (!doctor.diagnosticCenterId) {
       doctor.diagnosticCenterId = centerId;
       await doctor.save();
     }

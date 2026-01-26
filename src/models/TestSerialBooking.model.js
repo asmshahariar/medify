@@ -23,6 +23,7 @@ const testSerialBookingSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true
+    // Note: unique: true automatically creates an index, so we don't need explicit index() call
   },
   serialNumber: {
     type: Number,
@@ -101,7 +102,7 @@ const testSerialBookingSchema = new mongoose.Schema({
 testSerialBookingSchema.index({ patientId: 1, createdAt: -1 });
 testSerialBookingSchema.index({ diagnosticCenterId: 1, appointmentDate: 1, status: 1 });
 testSerialBookingSchema.index({ testId: 1, appointmentDate: 1, serialNumber: 1 });
-testSerialBookingSchema.index({ bookingNumber: 1 });
+// bookingNumber already has unique index from unique: true
 testSerialBookingSchema.index({ appointmentDate: 1, serialNumber: 1, testId: 1 });
 
 const TestSerialBooking = mongoose.model('TestSerialBooking', testSerialBookingSchema);

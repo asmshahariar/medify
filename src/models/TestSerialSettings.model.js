@@ -5,15 +5,13 @@ const testSerialSettingsSchema = new mongoose.Schema({
   diagnosticCenterId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'DiagnosticCenter',
-    required: true,
-    index: true
+    required: true
   },
   // Test ID
   testId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Test',
-    required: true,
-    index: true
+    required: true
   },
   // Total number of online serials available per day
   totalSerialsPerDay: {
