@@ -20,7 +20,9 @@ import {
   getAllHomeServices,
   getHomeServiceDetails,
   submitHomeServiceRequest,
-  getMyHistory
+  getMyHistory,
+  getAvailableTestSerials,
+  bookTestSerial
 } from '../controllers/patient.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
 
@@ -52,11 +54,21 @@ router.post('/serials/book', [
   body('date').isISO8601().withMessage('Valid date is required (YYYY-MM-DD)')
 ], bookSerial);
 
+// Test Serial booking
+router.get('/diagnostic-centers/:diagnosticCenterId/tests/:testId/serials', getAvailableTestSerials);
+router.post('/test-serials/book', [
+  body('testId').notEmpty().withMessage('Test ID is required'),
+  body('diagnosticCenterId').notEmpty().withMessage('Diagnostic center ID is required'),
+  body('serialNumber').isInt({ min: 1 }).withMessage('Valid serial number is required'),
+  body('date').isISO8601().withMessage('Valid date is required (YYYY-MM-DD)')
+], bookTestSerial);
+
 // Home Services
 router.get('/home-services', getAllHomeServices);
 router.get('/home-services/:serviceId', getHomeServiceDetails);
 router.post('/home-services/request', [
-  body('hospitalId').notEmpty().withMessage('Hospital ID is required'),
+  body('hospitalId').optional().notEmpty(),
+  body('diagnosticCenterId').optional().notEmpty(),
   body('homeServiceId').notEmpty().withMessage('Home service ID is required'),
   body('patientName').trim().notEmpty().withMessage('Patient name is required'),
   body('patientAge').isInt({ min: 0 }).withMessage('Valid patient age is required'),
@@ -89,7 +101,8 @@ router.get('/appointments/:appointmentId/prescription', downloadPrescription);
 // Diagnostics
 router.get('/diagnostics/tests', getDiagnosticTests);
 router.post('/diagnostics/orders', [
-  body('hospitalId').notEmpty().withMessage('Hospital ID is required'),
+  body('hospitalId').optional().notEmpty(),
+  body('diagnosticCenterId').optional().notEmpty(),
   body('tests').isArray({ min: 1 }).withMessage('At least one test is required'),
   body('collectionType').isIn(['walk_in', 'home_collection']).withMessage('Invalid collection type')
 ], createOrder);

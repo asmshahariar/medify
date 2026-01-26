@@ -9,7 +9,12 @@ const orderSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
-    required: true
+    default: null
+  },
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null
   },
   orderNumber: {
     type: String,
@@ -117,9 +122,21 @@ const orderSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Validation: Either hospitalId or diagnosticCenterId must be provided
+orderSchema.pre('save', function(next) {
+  if (!this.hospitalId && !this.diagnosticCenterId) {
+    return next(new Error('Either hospitalId or diagnosticCenterId must be provided'));
+  }
+  if (this.hospitalId && this.diagnosticCenterId) {
+    return next(new Error('Order cannot belong to both hospital and diagnostic center'));
+  }
+  next();
+});
+
 // Indexes
 orderSchema.index({ patientId: 1, createdAt: -1 });
 orderSchema.index({ hospitalId: 1, status: 1 });
+orderSchema.index({ diagnosticCenterId: 1, status: 1 });
 orderSchema.index({ orderNumber: 1 });
 
 const Order = mongoose.model('Order', orderSchema);

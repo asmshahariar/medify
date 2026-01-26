@@ -13,6 +13,7 @@ import patientRoutes from './src/routes/patient.routes.js';
 import doctorRoutes from './src/routes/doctor.routes.js'; // Doctor registration (public)
 import doctorPortalRoutes from './src/routes/doctor.portal.routes.js'; // Doctor portal (authenticated)
 import hospitalRoutes from './src/routes/hospital.routes.js';
+import diagnosticCenterRoutes from './src/routes/diagnosticCenter.routes.js';
 import adminRoutes from './src/routes/admin.routes.js';
 import sharedRoutes from './src/routes/shared.routes.js';
 import notificationRoutes from './src/routes/notification.routes.js';
@@ -63,6 +64,7 @@ app.use('/api/patient', patientRoutes);
 app.use('/api/doctors', doctorRoutes); // Doctor registration endpoints (public)
 app.use('/api/doctor', doctorPortalRoutes); // Doctor portal endpoints (authenticated)
 app.use('/api/hospitals', hospitalRoutes); // Hospital registration and management
+app.use('/api/diagnostic-centers', diagnosticCenterRoutes); // Diagnostic center registration and management
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes); // User profile endpoints
 app.use('/api/shared', sharedRoutes);

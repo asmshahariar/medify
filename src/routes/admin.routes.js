@@ -13,6 +13,8 @@ import {
   rejectDoctor,
   approveHospital,
   rejectHospital,
+  approveDiagnosticCenter,
+  rejectDiagnosticCenter,
   getPendingItems
 } from '../controllers/approval.controller.js';
 import { authenticate, authorize } from '../middlewares/auth.middleware.js';
@@ -45,6 +47,14 @@ router.post('/approve/hospital/:hospitalId', [
 router.post('/reject/hospital/:hospitalId', [
   body('reason').notEmpty().withMessage('Rejection reason is required')
 ], rejectHospital);
+
+// Diagnostic Center approval/rejection
+router.post('/approve/diagnostic-center/:centerId', [
+  body('reason').optional().trim()
+], approveDiagnosticCenter);
+router.post('/reject/diagnostic-center/:centerId', [
+  body('reason').notEmpty().withMessage('Rejection reason is required')
+], rejectDiagnosticCenter);
 
 // Banner management
 router.post('/banners', upload.single('banner'), uploadToCloudinaryMiddleware, [

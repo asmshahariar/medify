@@ -30,7 +30,12 @@ const testSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
-    required: true
+    default: null
+  },
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null
   },
   isActive: {
     type: Boolean,
@@ -55,6 +60,21 @@ const testSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Validation: Either hospitalId or diagnosticCenterId must be provided
+testSchema.pre('save', function(next) {
+  if (!this.hospitalId && !this.diagnosticCenterId) {
+    return next(new Error('Either hospitalId or diagnosticCenterId must be provided'));
+  }
+  if (this.hospitalId && this.diagnosticCenterId) {
+    return next(new Error('Test cannot belong to both hospital and diagnostic center'));
+  }
+  next();
+});
+
+// Indexes
+testSchema.index({ hospitalId: 1, isActive: 1 });
+testSchema.index({ diagnosticCenterId: 1, isActive: 1 });
 
 const Test = mongoose.model('Test', testSchema);
 

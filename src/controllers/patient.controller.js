@@ -2,6 +2,7 @@ import User from '../models/User.model.js';
 import Doctor from '../models/Doctor.model.js';
 import Chamber from '../models/Chamber.model.js';
 import Hospital from '../models/Hospital.model.js';
+import DiagnosticCenter from '../models/DiagnosticCenter.model.js';
 import Appointment from '../models/Appointment.model.js';
 import Prescription from '../models/Prescription.model.js';
 import Test from '../models/Test.model.js';
@@ -11,6 +12,8 @@ import Schedule from '../models/Schedule.model.js';
 import SerialSettings from '../models/SerialSettings.model.js';
 import HomeService from '../models/HomeService.model.js';
 import HomeServiceRequest from '../models/HomeServiceRequest.model.js';
+import TestSerialSettings from '../models/TestSerialSettings.model.js';
+import TestSerialBooking from '../models/TestSerialBooking.model.js';
 import { generateAvailableSlots, lockSlot } from '../utils/slotGenerator.util.js';
 import { createAndSendNotification } from '../services/notification.service.js';
 import { generatePrescriptionPDF } from '../utils/pdfGenerator.util.js';
@@ -809,11 +812,18 @@ export const downloadPrescription = async (req, res) => {
 // Get diagnostic tests
 export const getDiagnosticTests = async (req, res) => {
   try {
-    const { hospitalId, category, search, page = 1, limit = 20 } = req.query;
+    const { hospitalId, diagnosticCenterId, category, search, page = 1, limit = 20 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const query = { isActive: true };
-    if (hospitalId) query.hospitalId = hospitalId;
+    
+    // Support both hospital and diagnostic center
+    if (hospitalId) {
+      query.hospitalId = hospitalId;
+    } else if (diagnosticCenterId) {
+      query.diagnosticCenterId = diagnosticCenterId;
+    }
+    
     if (category) query.category = category;
     if (search) {
       query.$or = [
@@ -823,7 +833,8 @@ export const getDiagnosticTests = async (req, res) => {
     }
 
     const tests = await Test.find(query)
-      .populate('hospitalId', 'facilityName address')
+      .populate('hospitalId', 'name address')
+      .populate('diagnosticCenterId', 'name address')
       .sort({ name: 1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -859,13 +870,36 @@ export const createOrder = async (req, res) => {
       });
     }
 
-    const { hospitalId, tests, collectionType, appointmentDate, appointmentTime, address, discount = 0 } = req.body;
+    const { hospitalId, diagnosticCenterId, tests, collectionType, appointmentDate, appointmentTime, address, discount = 0 } = req.body;
+
+    // Validate that either hospitalId or diagnosticCenterId is provided
+    if (!hospitalId && !diagnosticCenterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Either hospitalId or diagnosticCenterId is required'
+      });
+    }
+
+    if (hospitalId && diagnosticCenterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot specify both hospitalId and diagnosticCenterId'
+      });
+    }
+
+    // Build query for tests
+    const testQuery = {
+      _id: { $in: tests.map(t => t.testId) }
+    };
+    
+    if (hospitalId) {
+      testQuery.hospitalId = hospitalId;
+    } else {
+      testQuery.diagnosticCenterId = diagnosticCenterId;
+    }
 
     // Calculate total
-    const testDetails = await Test.find({
-      _id: { $in: tests.map(t => t.testId) },
-      hospitalId
-    });
+    const testDetails = await Test.find(testQuery);
 
     let totalAmount = 0;
     const orderTests = tests.map(testOrder => {
@@ -890,7 +924,8 @@ export const createOrder = async (req, res) => {
 
     const order = await Order.create({
       patientId: req.user._id,
-      hospitalId,
+      hospitalId: hospitalId || null,
+      diagnosticCenterId: diagnosticCenterId || null,
       orderNumber,
       tests: orderTests,
       totalAmount,
@@ -940,7 +975,8 @@ export const getMyOrders = async (req, res) => {
     if (status) query.status = status;
 
     const orders = await Order.find(query)
-      .populate('hospitalId', 'facilityName address contactInfo')
+      .populate('hospitalId', 'name address contactInfo')
+      .populate('diagnosticCenterId', 'name address contactInfo')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -1009,9 +1045,13 @@ export const getAvailableSerials = async (req, res) => {
       });
     }
 
-    // Check if doctor is associated with a hospital
+    // Check if doctor is associated with a hospital or diagnostic center
     const hospital = doctor.hospitalId 
       ? await Hospital.findById(doctor.hospitalId)
+      : null;
+    
+    const diagnosticCenter = doctor.diagnosticCenterId 
+      ? await DiagnosticCenter.findById(doctor.diagnosticCenterId)
       : null;
 
     // Get serial settings
@@ -1023,11 +1063,19 @@ export const getAvailableSerials = async (req, res) => {
         hospitalId: hospital._id,
         isActive: true
       });
+    } else if (diagnosticCenter && diagnosticCenter.status === 'approved') {
+      // Diagnostic center-based doctor
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        diagnosticCenterId: diagnosticCenter._id,
+        isActive: true
+      });
     } else {
       // Individual doctor
       serialSettings = await SerialSettings.findOne({
         doctorId,
         hospitalId: null,
+        diagnosticCenterId: null,
         isActive: true
       });
     }
@@ -1124,6 +1172,10 @@ export const getAvailableSerials = async (req, res) => {
           id: hospital._id,
           name: hospital.name
         } : null,
+        diagnosticCenter: diagnosticCenter ? {
+          id: diagnosticCenter._id,
+          name: diagnosticCenter.name
+        } : null,
         date: date,
         availableSerials,
         totalSerials: serialSettings.totalSerialsPerDay,
@@ -1176,9 +1228,13 @@ export const bookSerial = async (req, res) => {
       });
     }
 
-    // Check if doctor is associated with a hospital
+    // Check if doctor is associated with a hospital or diagnostic center
     const hospital = doctor.hospitalId 
       ? await Hospital.findById(doctor.hospitalId).populate('admins', 'email name phone')
+      : null;
+    
+    const diagnosticCenter = doctor.diagnosticCenterId 
+      ? await DiagnosticCenter.findById(doctor.diagnosticCenterId).populate('admins', 'email name phone')
       : null;
 
     // Get serial settings
@@ -1189,10 +1245,17 @@ export const bookSerial = async (req, res) => {
         hospitalId: hospital._id,
         isActive: true
       });
+    } else if (diagnosticCenter && diagnosticCenter.status === 'approved') {
+      serialSettings = await SerialSettings.findOne({
+        doctorId,
+        diagnosticCenterId: diagnosticCenter._id,
+        isActive: true
+      });
     } else {
       serialSettings = await SerialSettings.findOne({
         doctorId,
         hospitalId: null,
+        diagnosticCenterId: null,
         isActive: true
       });
     }
@@ -1322,10 +1385,25 @@ export const bookSerial = async (req, res) => {
       );
     }
 
-    // Send patient information to hospital admin or doctor
+    // Send patient information to hospital admin, diagnostic center admin, or doctor
     if (hospital && hospital.admins && hospital.admins.length > 0) {
       // Send to all hospital admins
       for (const admin of hospital.admins) {
+        if (admin._id) {
+          await createAndSendNotification(
+            io,
+            admin._id,
+            'appointment_created',
+            'New Serial Booking',
+            `New serial booking for Dr. ${doctor.name}: ${patient.name} (${patient.email}, ${patient.phone}) - Serial #${serialNumber}`,
+            appointment._id,
+            'appointment'
+          );
+        }
+      }
+    } else if (diagnosticCenter && diagnosticCenter.admins && diagnosticCenter.admins.length > 0) {
+      // Send to all diagnostic center admins
+      for (const admin of diagnosticCenter.admins) {
         if (admin._id) {
           await createAndSendNotification(
             io,
@@ -1397,7 +1475,7 @@ export const bookSerial = async (req, res) => {
 // Get all home services (public - can be accessed without auth or with patient auth)
 export const getAllHomeServices = async (req, res) => {
   try {
-    const { hospitalId, serviceType, page = 1, limit = 20 } = req.query;
+    const { hospitalId, diagnosticCenterId, serviceType, page = 1, limit = 20 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     // Build query
@@ -1413,6 +1491,19 @@ export const getAllHomeServices = async (req, res) => {
         });
       }
       query.hospitalId = hospitalId;
+      query.diagnosticCenterId = null;
+    } else if (diagnosticCenterId) {
+      // Verify diagnostic center exists and is approved
+      const DiagnosticCenter = (await import('../models/DiagnosticCenter.model.js')).default;
+      const diagnosticCenter = await DiagnosticCenter.findById(diagnosticCenterId);
+      if (!diagnosticCenter || diagnosticCenter.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Diagnostic center not found or not approved'
+        });
+      }
+      query.diagnosticCenterId = diagnosticCenterId;
+      query.hospitalId = null;
     }
 
     if (serviceType) {
@@ -1422,6 +1513,7 @@ export const getAllHomeServices = async (req, res) => {
     // Get home services
     const homeServices = await HomeService.find(query)
       .populate('hospitalId', 'name address logo contactInfo')
+      .populate('diagnosticCenterId', 'name address logo contactInfo')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -1439,6 +1531,13 @@ export const getAllHomeServices = async (req, res) => {
             address: service.hospitalId.address,
             logo: service.hospitalId.logo,
             contactInfo: service.hospitalId.contactInfo
+          } : null,
+          diagnosticCenter: service.diagnosticCenterId ? {
+            id: service.diagnosticCenterId._id,
+            name: service.diagnosticCenterId.name,
+            address: service.diagnosticCenterId.address,
+            logo: service.diagnosticCenterId.logo,
+            contactInfo: service.diagnosticCenterId.contactInfo
           } : null
         })),
         total,
@@ -1468,7 +1567,8 @@ export const getHomeServiceDetails = async (req, res) => {
     const { serviceId } = req.params;
 
     const homeService = await HomeService.findById(serviceId)
-      .populate('hospitalId', 'name address logo contactInfo departments');
+      .populate('hospitalId', 'name address logo contactInfo departments')
+      .populate('diagnosticCenterId', 'name address logo contactInfo departments');
 
     if (!homeService || !homeService.isActive) {
       return res.status(404).json({
@@ -1477,13 +1577,24 @@ export const getHomeServiceDetails = async (req, res) => {
       });
     }
 
-    // Verify hospital is approved
-    const hospital = await Hospital.findById(homeService.hospitalId);
-    if (hospital && hospital.status !== 'approved') {
-      return res.status(404).json({
-        success: false,
-        message: 'Home service not available'
-      });
+    // Verify hospital or diagnostic center is approved
+    if (homeService.hospitalId) {
+      const hospital = await Hospital.findById(homeService.hospitalId);
+      if (hospital && hospital.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Home service not available'
+        });
+      }
+    } else if (homeService.diagnosticCenterId) {
+      const DiagnosticCenter = (await import('../models/DiagnosticCenter.model.js')).default;
+      const diagnosticCenter = await DiagnosticCenter.findById(homeService.diagnosticCenterId);
+      if (diagnosticCenter && diagnosticCenter.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Home service not available'
+        });
+      }
     }
 
     res.json({
@@ -1498,6 +1609,14 @@ export const getHomeServiceDetails = async (req, res) => {
             logo: homeService.hospitalId.logo,
             contactInfo: homeService.hospitalId.contactInfo,
             departments: homeService.hospitalId.departments
+          } : null,
+          diagnosticCenter: homeService.diagnosticCenterId ? {
+            id: homeService.diagnosticCenterId._id,
+            name: homeService.diagnosticCenterId.name,
+            address: homeService.diagnosticCenterId.address,
+            logo: homeService.diagnosticCenterId.logo,
+            contactInfo: homeService.diagnosticCenterId.contactInfo,
+            departments: homeService.diagnosticCenterId.departments
           } : null
         }
       }
@@ -1526,6 +1645,7 @@ export const submitHomeServiceRequest = async (req, res) => {
 
     const {
       hospitalId,
+      diagnosticCenterId,
       homeServiceId,
       patientName,
       patientAge,
@@ -1537,21 +1657,59 @@ export const submitHomeServiceRequest = async (req, res) => {
       notes
     } = req.body;
 
-    // Verify hospital exists and is approved
-    const hospital = await Hospital.findById(hospitalId).populate('admins', 'email name phone');
-    if (!hospital || hospital.status !== 'approved') {
-      return res.status(404).json({
+    // Validate that either hospitalId or diagnosticCenterId is provided
+    if (!hospitalId && !diagnosticCenterId) {
+      return res.status(400).json({
         success: false,
-        message: 'Hospital not found or not approved'
+        message: 'Either hospitalId or diagnosticCenterId is required'
       });
     }
 
-    // Verify home service exists and is active
-    const homeService = await HomeService.findOne({
-      _id: homeServiceId,
-      hospitalId,
-      isActive: true
-    });
+    if (hospitalId && diagnosticCenterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot specify both hospitalId and diagnosticCenterId'
+      });
+    }
+
+    let hospital = null;
+    let diagnosticCenter = null;
+    let homeService = null;
+
+    if (hospitalId) {
+      // Verify hospital exists and is approved
+      hospital = await Hospital.findById(hospitalId).populate('admins', 'email name phone');
+      if (!hospital || hospital.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Hospital not found or not approved'
+        });
+      }
+
+      // Verify home service exists and is active
+      homeService = await HomeService.findOne({
+        _id: homeServiceId,
+        hospitalId,
+        isActive: true
+      });
+    } else {
+      // Verify diagnostic center exists and is approved
+      const DiagnosticCenter = (await import('../models/DiagnosticCenter.model.js')).default;
+      diagnosticCenter = await DiagnosticCenter.findById(diagnosticCenterId).populate('admins', 'email name phone');
+      if (!diagnosticCenter || diagnosticCenter.status !== 'approved') {
+        return res.status(404).json({
+          success: false,
+          message: 'Diagnostic center not found or not approved'
+        });
+      }
+
+      // Verify home service exists and is active
+      homeService = await HomeService.findOne({
+        _id: homeServiceId,
+        diagnosticCenterId,
+        isActive: true
+      });
+    }
 
     if (!homeService) {
       return res.status(404).json({
@@ -1566,7 +1724,8 @@ export const submitHomeServiceRequest = async (req, res) => {
     // Create home service request
     const request = await HomeServiceRequest.create({
       patientId: req.user._id,
-      hospitalId,
+      hospitalId: hospitalId || null,
+      diagnosticCenterId: diagnosticCenterId || null,
       homeServiceId,
       requestNumber,
       patientName,
@@ -1585,8 +1744,8 @@ export const submitHomeServiceRequest = async (req, res) => {
 
     const io = req.app.get('io');
 
-    // Send notification to all hospital admins
-    if (hospital.admins && hospital.admins.length > 0) {
+    // Send notification to hospital admins or diagnostic center admins
+    if (hospital && hospital.admins && hospital.admins.length > 0) {
       for (const admin of hospital.admins) {
         if (admin._id) {
           await createAndSendNotification(
@@ -1595,6 +1754,20 @@ export const submitHomeServiceRequest = async (req, res) => {
             'order_created',
             'New Home Service Request',
             `New home service request: ${patientName} (${phoneNumber}) - ${homeService.serviceType}`,
+            request._id,
+            'order'
+          );
+        }
+      }
+    } else if (diagnosticCenter && diagnosticCenter.admins && diagnosticCenter.admins.length > 0) {
+      for (const admin of diagnosticCenter.admins) {
+        if (admin._id) {
+          await createAndSendNotification(
+            io,
+            admin._id,
+            'order_created',
+            'New Home Service Request',
+            `New diagnostic home service request: ${patientName} (${phoneNumber}) - ${homeService.serviceType}`,
             request._id,
             'order'
           );
@@ -1619,10 +1792,14 @@ export const submitHomeServiceRequest = async (req, res) => {
       data: {
         request: {
           ...request.toObject(),
-          hospital: {
+          hospital: hospital ? {
             id: hospital._id,
             name: hospital.name
-          },
+          } : null,
+          diagnosticCenter: diagnosticCenter ? {
+            id: diagnosticCenter._id,
+            name: diagnosticCenter.name
+          } : null,
           service: {
             id: homeService._id,
             serviceType: homeService.serviceType,
@@ -1704,8 +1881,10 @@ export const getMyHistory = async (req, res) => {
 
     // Get home service requests if type is 'home_services' or 'all'
     if (!type || type === 'home_services' || type === 'all') {
+      const DiagnosticCenter = (await import('../models/DiagnosticCenter.model.js')).default;
       const homeServiceRequests = await HomeServiceRequest.find({ patientId })
         .populate('hospitalId', 'name address logo contactInfo')
+        .populate('diagnosticCenterId', 'name address logo contactInfo')
         .populate('homeServiceId', 'serviceType price note availableTime')
         .sort({ createdAt: -1 })
         .skip(type === 'home_services' ? skip : 0)
@@ -1722,6 +1901,13 @@ export const getMyHistory = async (req, res) => {
             address: req.hospitalId.address,
             logo: req.hospitalId.logo,
             contactInfo: req.hospitalId.contactInfo
+          } : null,
+          diagnosticCenter: req.diagnosticCenterId ? {
+            id: req.diagnosticCenterId._id,
+            name: req.diagnosticCenterId.name,
+            address: req.diagnosticCenterId.address,
+            logo: req.diagnosticCenterId.logo,
+            contactInfo: req.diagnosticCenterId.contactInfo
           } : null,
           service: req.homeServiceId ? {
             id: req.homeServiceId._id,
@@ -1784,6 +1970,378 @@ export const getMyHistory = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch history',
+      error: error.message
+    });
+  }
+};
+
+// Get available test serials for a diagnostic center test
+export const getAvailableTestSerials = async (req, res) => {
+  try {
+    const { testId, diagnosticCenterId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Date is required (format: YYYY-MM-DD)'
+      });
+    }
+
+    const appointmentDate = moment(date).startOf('day').toDate();
+    const dayOfWeek = moment(date).day(); // 0 = Sunday, 6 = Saturday
+
+    // Verify diagnostic center exists and is approved
+    const diagnosticCenter = await DiagnosticCenter.findById(diagnosticCenterId);
+    if (!diagnosticCenter || diagnosticCenter.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Diagnostic center not found or not approved'
+      });
+    }
+
+    // Verify test exists and belongs to this diagnostic center
+    const test = await Test.findById(testId);
+    if (!test || !test.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test not found or not available'
+      });
+    }
+
+    if (test.diagnosticCenterId?.toString() !== diagnosticCenterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Test does not belong to this diagnostic center'
+      });
+    }
+
+    // Get serial settings
+    const serialSettings = await TestSerialSettings.findOne({
+      testId,
+      diagnosticCenterId,
+      isActive: true
+    });
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test serial settings not found for this test'
+      });
+    }
+
+    // Check if serials are available on this day
+    if (serialSettings.availableDays && serialSettings.availableDays.length > 0) {
+      if (!serialSettings.availableDays.includes(dayOfWeek)) {
+        return res.json({
+          success: true,
+          data: {
+            test: {
+              id: test._id,
+              name: test.name,
+              code: test.code,
+              category: test.category
+            },
+            diagnosticCenter: {
+              id: diagnosticCenter._id,
+              name: diagnosticCenter.name
+            },
+            date: date,
+            availableSerials: [],
+            totalSerials: serialSettings.totalSerialsPerDay,
+            message: 'No serials available on this day'
+          }
+        });
+      }
+    }
+
+    // Get booked serials for this date
+    const bookedBookings = await TestSerialBooking.find({
+      testId,
+      diagnosticCenterId,
+      appointmentDate: {
+        $gte: moment(date).startOf('day').toDate(),
+        $lte: moment(date).endOf('day').toDate()
+      },
+      status: { $in: ['pending', 'confirmed'] }
+    }).select('serialNumber timeSlot');
+
+    // Extract booked serial numbers
+    const bookedSerialNumbers = bookedBookings.map(booking => booking.serialNumber);
+
+    // Generate available serials (only even numbers)
+    const totalSerials = serialSettings.totalSerialsPerDay;
+    const availableSerials = [];
+    
+    // Calculate time slot duration
+    const [startHour, startMin] = serialSettings.serialTimeRange.startTime.split(':').map(Number);
+    const [endHour, endMin] = serialSettings.serialTimeRange.endTime.split(':').map(Number);
+    const startMinutes = startHour * 60 + startMin;
+    const endMinutes = endHour * 60 + endMin;
+    const totalMinutes = endMinutes - startMinutes;
+    const slotDuration = Math.floor(totalMinutes / totalSerials);
+
+    for (let i = 1; i <= totalSerials; i++) {
+      // Only include even-numbered serials
+      if (i % 2 === 0) {
+        const slotMinutes = startMinutes + (i - 1) * slotDuration;
+        const slotHour = Math.floor(slotMinutes / 60);
+        const slotMin = slotMinutes % 60;
+        const timeString = `${String(slotHour).padStart(2, '0')}:${String(slotMin).padStart(2, '0')}`;
+        
+        const endSlotMinutes = slotMinutes + slotDuration;
+        const endSlotHour = Math.floor(endSlotMinutes / 60);
+        const endSlotMin = endSlotMinutes % 60;
+        const endTimeString = `${String(endSlotHour).padStart(2, '0')}:${String(endSlotMin).padStart(2, '0')}`;
+
+        // Check if this serial number is already booked
+        const isBooked = bookedSerialNumbers.includes(i);
+
+        if (!isBooked) {
+          availableSerials.push({
+            serialNumber: i,
+            time: timeString,
+            endTime: endTimeString,
+            available: true
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        test: {
+          id: test._id,
+          name: test.name,
+          code: test.code,
+          category: test.category,
+          description: test.description,
+          preparation: test.preparation
+        },
+        diagnosticCenter: {
+          id: diagnosticCenter._id,
+          name: diagnosticCenter.name
+        },
+        date: date,
+        availableSerials,
+        totalSerials: serialSettings.totalSerialsPerDay,
+        testPrice: serialSettings.testPrice,
+        timeRange: serialSettings.serialTimeRange,
+        bookedCount: bookedBookings.length,
+        availableCount: availableSerials.length
+      }
+    });
+  } catch (error) {
+    console.error('Get available test serials error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get available test serials',
+      error: error.message
+    });
+  }
+};
+
+// Book a test serial
+export const bookTestSerial = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { testId, diagnosticCenterId, serialNumber, date } = req.body;
+
+    if (!serialNumber || serialNumber % 2 !== 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only even-numbered serials can be booked online'
+      });
+    }
+
+    const appointmentDate = moment(date).startOf('day').toDate();
+    const dayOfWeek = moment(date).day();
+
+    // Verify diagnostic center exists and is approved
+    const diagnosticCenter = await DiagnosticCenter.findById(diagnosticCenterId).populate('admins', 'email name phone');
+    if (!diagnosticCenter || diagnosticCenter.status !== 'approved') {
+      return res.status(404).json({
+        success: false,
+        message: 'Diagnostic center not found or not approved'
+      });
+    }
+
+    // Verify test exists and belongs to this diagnostic center
+    const test = await Test.findById(testId);
+    if (!test || !test.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test not found or not available'
+      });
+    }
+
+    if (test.diagnosticCenterId?.toString() !== diagnosticCenterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Test does not belong to this diagnostic center'
+      });
+    }
+
+    // Get serial settings
+    const serialSettings = await TestSerialSettings.findOne({
+      testId,
+      diagnosticCenterId,
+      isActive: true
+    });
+
+    if (!serialSettings) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test serial settings not found for this test'
+      });
+    }
+
+    // Check if serials are available on this day
+    if (serialSettings.availableDays && serialSettings.availableDays.length > 0) {
+      if (!serialSettings.availableDays.includes(dayOfWeek)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Serials are not available on this day'
+        });
+      }
+    }
+
+    // Check if serial is already booked
+    const existingBooking = await TestSerialBooking.findOne({
+      testId,
+      diagnosticCenterId,
+      appointmentDate: {
+        $gte: moment(date).startOf('day').toDate(),
+        $lte: moment(date).endOf('day').toDate()
+      },
+      serialNumber,
+      status: { $in: ['pending', 'confirmed'] }
+    });
+
+    if (existingBooking) {
+      return res.status(400).json({
+        success: false,
+        message: 'This serial is already booked'
+      });
+    }
+
+    // Calculate time slot
+    const [startHour, startMin] = serialSettings.serialTimeRange.startTime.split(':').map(Number);
+    const [endHour, endMin] = serialSettings.serialTimeRange.endTime.split(':').map(Number);
+    const startMinutes = startHour * 60 + startMin;
+    const endMinutes = endHour * 60 + endMin;
+    const totalMinutes = endMinutes - startMinutes;
+    const slotDuration = Math.floor(totalMinutes / serialSettings.totalSerialsPerDay);
+
+    const slotMinutes = startMinutes + (serialNumber - 1) * slotDuration;
+    const slotHour = Math.floor(slotMinutes / 60);
+    const slotMin = slotMinutes % 60;
+    const timeString = `${String(slotHour).padStart(2, '0')}:${String(slotMin).padStart(2, '0')}`;
+    
+    const endSlotMinutes = slotMinutes + slotDuration;
+    const endSlotHour = Math.floor(endSlotMinutes / 60);
+    const endSlotMin = endSlotMinutes % 60;
+    const endTimeString = `${String(endSlotHour).padStart(2, '0')}:${String(endSlotMin).padStart(2, '0')}`;
+
+    // Get patient info
+    const patient = await User.findById(req.user._id);
+
+    // Generate booking number
+    const bookingNumber = `TSB-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+    // Create booking
+    const booking = await TestSerialBooking.create({
+      patientId: req.user._id,
+      diagnosticCenterId,
+      testId,
+      bookingNumber,
+      serialNumber,
+      appointmentDate,
+      timeSlot: {
+        startTime: timeString,
+        endTime: endTimeString
+      },
+      testPrice: serialSettings.testPrice,
+      testName: test.name,
+      patientName: patient.name,
+      patientEmail: patient.email,
+      patientPhone: patient.phone,
+      status: 'pending'
+    });
+
+    const io = req.app.get('io');
+
+    // Send notification to diagnostic center admins (non-blocking)
+    if (diagnosticCenter.admins && diagnosticCenter.admins.length > 0) {
+      for (const admin of diagnosticCenter.admins) {
+        if (admin._id) {
+          try {
+            await createAndSendNotification(
+              io,
+              admin._id,
+              'test_serial_booking',
+              'New Test Serial Booking',
+              `New test serial booking for ${test.name}: ${patient.name} (${patient.email}, ${patient.phone}) - Serial #${serialNumber}`,
+              booking._id,
+              'test_booking'
+            );
+          } catch (notifError) {
+            console.error('Failed to send notification to admin:', notifError);
+            // Continue even if notification fails
+          }
+        }
+      }
+    }
+
+    // Send notification to patient (non-blocking)
+    try {
+      await createAndSendNotification(
+        io,
+        req.user._id,
+        'test_serial_booking',
+        'Test Serial Booked',
+        `Your test serial for ${test.name} has been booked. Serial #${serialNumber}, Date: ${date}, Time: ${timeString}`,
+        booking._id,
+        'test_booking'
+      );
+    } catch (notifError) {
+      console.error('Failed to send notification to patient:', notifError);
+      // Continue even if notification fails
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Test serial booked successfully',
+      data: {
+        booking: {
+          ...booking.toObject(),
+          test: {
+            id: test._id,
+            name: test.name,
+            code: test.code,
+            category: test.category
+          },
+          diagnosticCenter: {
+            id: diagnosticCenter._id,
+            name: diagnosticCenter.name
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Book test serial error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to book test serial',
       error: error.message
     });
   }

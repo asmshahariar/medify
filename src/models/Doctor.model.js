@@ -104,6 +104,11 @@ const doctorSchema = new mongoose.Schema({
     ref: 'Hospital',
     default: null
   },
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null
+  },
   medicalLicenseNumber: {
     type: String,
     required: [true, 'Medical license number is required'],

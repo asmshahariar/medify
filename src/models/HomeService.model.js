@@ -4,7 +4,13 @@ const homeServiceSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
-    required: [true, 'Hospital ID is required'],
+    default: null,
+    index: true
+  },
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null,
     index: true
   },
   serviceType: {
@@ -60,9 +66,22 @@ const homeServiceSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Validation: Either hospitalId or diagnosticCenterId must be provided
+homeServiceSchema.pre('save', function(next) {
+  if (!this.hospitalId && !this.diagnosticCenterId) {
+    return next(new Error('Either hospitalId or diagnosticCenterId must be provided'));
+  }
+  if (this.hospitalId && this.diagnosticCenterId) {
+    return next(new Error('Home service cannot belong to both hospital and diagnostic center'));
+  }
+  next();
+});
+
 // Index for efficient queries
 homeServiceSchema.index({ hospitalId: 1, isActive: 1 });
+homeServiceSchema.index({ diagnosticCenterId: 1, isActive: 1 });
 homeServiceSchema.index({ hospitalId: 1, serviceType: 1 });
+homeServiceSchema.index({ diagnosticCenterId: 1, serviceType: 1 });
 
 // Validate that endTime is after startTime
 homeServiceSchema.pre('save', function(next) {

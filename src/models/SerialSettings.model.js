@@ -8,7 +8,14 @@ const serialSettingsSchema = new mongoose.Schema({
     default: null,
     index: true
   },
-  // For individual doctors (not under hospital)
+  // For diagnostic center-based doctors
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null,
+    index: true
+  },
+  // For individual doctors (not under hospital or diagnostic center)
   doctorId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor',
@@ -84,24 +91,36 @@ serialSettingsSchema.pre('save', function(next) {
       return next(new Error('End time must be after start time'));
     }
   }
+  // Ensure doctor is not associated with both hospital and diagnostic center
+  if (this.hospitalId && this.diagnosticCenterId) {
+    return next(new Error('Doctor cannot be associated with both hospital and diagnostic center'));
+  }
   next();
 });
 
 // Indexes for efficient queries
 serialSettingsSchema.index({ doctorId: 1, hospitalId: 1 });
+serialSettingsSchema.index({ doctorId: 1, diagnosticCenterId: 1 });
 serialSettingsSchema.index({ doctorId: 1, isActive: 1 });
 serialSettingsSchema.index({ hospitalId: 1, doctorId: 1 });
+serialSettingsSchema.index({ diagnosticCenterId: 1, doctorId: 1 });
 
-// Compound unique index: one setting per doctor per hospital (or per doctor if individual)
+// Compound unique index: one setting per doctor per hospital
 serialSettingsSchema.index(
   { doctorId: 1, hospitalId: 1 },
-  { unique: true, sparse: true, partialFilterExpression: { hospitalId: { $ne: null } } }
+  { unique: true, sparse: true, partialFilterExpression: { hospitalId: { $ne: null }, diagnosticCenterId: null } }
 );
 
-// Unique index for individual doctors (no hospital)
+// Compound unique index: one setting per doctor per diagnostic center
+serialSettingsSchema.index(
+  { doctorId: 1, diagnosticCenterId: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { diagnosticCenterId: { $ne: null }, hospitalId: null } }
+);
+
+// Unique index for individual doctors (no hospital or diagnostic center)
 serialSettingsSchema.index(
   { doctorId: 1 },
-  { unique: true, sparse: true, partialFilterExpression: { hospitalId: null } }
+  { unique: true, sparse: true, partialFilterExpression: { hospitalId: null, diagnosticCenterId: null } }
 );
 
 const SerialSettings = mongoose.model('SerialSettings', serialSettingsSchema);

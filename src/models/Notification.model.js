@@ -22,6 +22,7 @@ const notificationSchema = new mongoose.Schema({
       'report_ready',
       'verification_approved',
       'verification_rejected',
+      'test_serial_booking',
       'broadcast'
     ],
     required: true
@@ -39,7 +40,7 @@ const notificationSchema = new mongoose.Schema({
   },
   relatedType: {
     type: String,
-    enum: ['appointment', 'order', 'prescription', 'user', 'none']
+    enum: ['appointment', 'order', 'prescription', 'user', 'test_booking', 'none']
   },
   isRead: {
     type: Boolean,

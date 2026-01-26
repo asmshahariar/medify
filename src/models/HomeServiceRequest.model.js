@@ -10,7 +10,13 @@ const homeServiceRequestSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
-    required: true,
+    default: null,
+    index: true
+  },
+  diagnosticCenterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DiagnosticCenter',
+    default: null,
     index: true
   },
   homeServiceId: {
@@ -139,10 +145,23 @@ const homeServiceRequestSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Validation: Either hospitalId or diagnosticCenterId must be provided
+homeServiceRequestSchema.pre('save', function(next) {
+  if (!this.hospitalId && !this.diagnosticCenterId) {
+    return next(new Error('Either hospitalId or diagnosticCenterId must be provided'));
+  }
+  if (this.hospitalId && this.diagnosticCenterId) {
+    return next(new Error('Home service request cannot belong to both hospital and diagnostic center'));
+  }
+  next();
+});
+
 // Indexes for efficient queries
 homeServiceRequestSchema.index({ patientId: 1, createdAt: -1 });
 homeServiceRequestSchema.index({ hospitalId: 1, status: 1 });
+homeServiceRequestSchema.index({ diagnosticCenterId: 1, status: 1 });
 homeServiceRequestSchema.index({ hospitalId: 1, createdAt: -1 });
+homeServiceRequestSchema.index({ diagnosticCenterId: 1, createdAt: -1 });
 homeServiceRequestSchema.index({ status: 1, createdAt: -1 });
 
 const HomeServiceRequest = mongoose.model('HomeServiceRequest', homeServiceRequestSchema);
